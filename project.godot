@@ -1,0 +1,42 @@
+; Engine configuration file.
+; It's best edited using the editor UI and not directly,
+; since the parameters that go here are not all obvious.
+;
+; Format:
+;   [section] ; section goes between []
+;   param=value ; assign values to parameters
+
+config_version=5
+
+[animation]
+
+compatibility/default_parent_skeleton_in_mesh_instance_3d=true
+
+[application]
+
+config/name="MetaHumanGodotPilot"
+config/description="MetaHuman exported from UE5 5.7 → Blender → Godot 4.6 with MatMADNESS HumanShaders.
+First fleet run; documenting gotchas in the KB technique doc."
+run/main_scene="res://scenes/emote_render.tscn"
+config/features=PackedStringArray("4.6", "Forward Plus")
+config/icon="res://icon.svg"
+
+[display]
+
+window/size/viewport_width=2160
+window/size/viewport_height=2160
+
+[rendering]
+
+anti_aliasing/quality/msaa_3d=3
+anti_aliasing/quality/screen_space_aa=0
+anti_aliasing/quality/use_taa=false
+; SSAA: render 3D at 2x the 2160 output (4320 internal) then downsample. The thin
+; hair-card strands get many samples → far less shimmer, and MSAA 8x still resolves
+; the alpha_to_coverage edges at the higher internal res. scale=1.0 disables (MSAA only).
+scaling_3d/mode=0
+scaling_3d/scale=2.0
+environment/defaults/default_clear_color=Color(0.015, 0.017, 0.022, 1)
+lights_and_shadows/directional_shadow/size=4096
+lights_and_shadows/directional_shadow/soft_shadow_filter_quality=4
+lights_and_shadows/positional_shadow/soft_shadow_filter_quality=4

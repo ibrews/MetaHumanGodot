@@ -1,0 +1,51 @@
+# ── Godot editor / import cache ──────────────────────────────────────────────
+/.godot/
+/.import/
+export.cfg
+export_presets.cfg
+
+# ── Local user state ─────────────────────────────────────────────────────────
+look_settings.json
+/out/
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MetaHuman-derived ASSETS — DO NOT DISTRIBUTE.
+#
+# This is a "bring your own MetaHuman" tool. Epic's MetaHuman license (as of
+# June 2025) permits using MetaHumans in other engines, but we deliberately do
+# NOT redistribute the raw character meshes/textures/grooms in this public repo.
+# Each user supplies their own licensed MetaHuman export.
+#
+# Drop your own export at godot_project/character.glb (+ its textures) and the
+# tool uses it; otherwise it shows a neutral placeholder.
+# ─────────────────────────────────────────────────────────────────────────────
+character.glb
+*.glb
+*.fbx
+*.png
+*.exr
+*.tga
+*.hdr
+# Godot import sidecars for the above (leak asset names + point at the cache)
+*.png.import
+*.glb.import
+*.fbx.import
+*.exr.import
+*.tga.import
+*.hdr.import
+
+# ── Dev cruft / local backups — not for publication ──────────────────────────
+*.bak
+*.out
+/_tex_backup_mhtest/
+/textures_split/
+# Unused vendored MatMADNESS copies (incl. an embedded git repo). The shaders we
+# actually use are the local scenes/*.gdshader, which carry the MatMADNESS MIT
+# header; full attribution is in LICENSE. Nothing references res://addons/.
+/addons/
+
+# Keep nothing MetaHuman-derived. (Project icon is icon.svg — SVG, not ignored.)
+# NOTE: the broad *.png rule also excludes the MIT MatMADNESS addon's own bundled
+# textures under addons/. Our scenes use the local scenes/*.gdshader copies, so
+# this doesn't break them — but if we ever ship the addon standalone, carve those
+# back in. A full "what to actually publish" repo curation is a follow-up.
