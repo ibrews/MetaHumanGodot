@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 1200px;
+    height: 630px;
+    overflow: hidden;
+    background: #0b0f1a;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    position: relative;
+  }
+
+  .bg {
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(ellipse 700px 500px at 28% 55%, #12253d 0%, transparent 70%),
+      radial-gradient(ellipse 400px 300px at 75% 30%, #0e1e38 0%, transparent 60%),
+      #0b0f1a;
+  }
+
+  /* left content */
+  .left {
+    position: absolute;
+    left: 64px;
+    top: 60px;
+    width: 560px;
+    z-index: 10;
+  }
+
+  .eyebrow {
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.13em;
+    color: #e8923a;
+    text-transform: uppercase;
+    margin-bottom: 22px;
+  }
+
+  .title {
+    font-size: 76px;
+    font-weight: 900;
+    color: #ffffff;
+    line-height: 0.95;
+    letter-spacing: -2px;
+    margin-bottom: 22px;
+  }
+
+  .subtitle {
+    font-size: 19px;
+    font-weight: 400;
+    color: #7a8baa;
+    line-height: 1.55;
+    margin-bottom: 30px;
+  }
+  .subtitle strong {
+    color: #e8923a;
+    font-weight: 600;
+  }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.09);
+    border-radius: 6px;
+    padding: 7px 14px;
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.09em;
+    color: #5a6880;
+    text-transform: uppercase;
+  }
+  .badge .label { color: #344155; }
+
+  .tags-left {
+    position: absolute;
+    bottom: 36px;
+    left: 64px;
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    color: #344155;
+    text-transform: uppercase;
+    z-index: 10;
+  }
+
+  .tags-right {
+    position: absolute;
+    bottom: 36px;
+    right: 64px;
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    color: #e8923a;
+    text-transform: uppercase;
+    z-index: 10;
+    text-align: right;
+  }
+
+  .illustration {
+    position: absolute;
+    right: 0;
+    top: 0;
+    width: 530px;
+    height: 630px;
+  }
+</style>
+</head>
+<body>
+  <div class="bg"></div>
+
+  <!-- Star field -->
+  <svg style="position:absolute;inset:0;width:1200px;height:630px;" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="670" cy="48"  r="1.0" fill="white" opacity="0.35"/>
+    <circle cx="730" cy="95"  r="0.7" fill="white" opacity="0.25"/>
+    <circle cx="810" cy="55"  r="1.3" fill="white" opacity="0.40"/>
+    <circle cx="900" cy="130" r="0.8" fill="white" opacity="0.28"/>
+    <circle cx="990" cy="75"  r="1.1" fill="white" opacity="0.35"/>
+    <circle cx="1080" cy="45" r="0.9" fill="white" opacity="0.30"/>
+    <circle cx="1140" cy="180" r="1.2" fill="white" opacity="0.32"/>
+    <circle cx="1050" cy="250" r="0.7" fill="white" opacity="0.25"/>
+    <circle cx="960"  cy="400" r="1.0" fill="white" opacity="0.28"/>
+    <circle cx="1100" cy="480" r="0.8" fill="white" opacity="0.22"/>
+    <circle cx="690"  cy="530" r="1.1" fill="white" opacity="0.30"/>
+    <circle cx="750"  cy="590" r="0.6" fill="white" opacity="0.20"/>
+    <circle cx="850"  cy="560" r="1.0" fill="white" opacity="0.25"/>
+    <circle cx="640"  cy="200" r="0.8" fill="white" opacity="0.22"/>
+    <circle cx="1170" cy="340" r="1.1" fill="white" opacity="0.28"/>
+    <circle cx="880"  cy="310" r="0.7" fill="white" opacity="0.22"/>
+  </svg>
+
+  <!-- Left content -->
+  <div class="left">
+    <div class="eyebrow">Open Source &nbsp;·&nbsp; Godot 4.6</div>
+    <div class="title">MetaHuman<br>Godot</div>
+    <div class="subtitle">
+      Live skin, lighting &amp; hair sliders —<br>
+      <strong>bring your own MetaHuman.</strong>
+    </div>
+    <div class="badge">
+      <span class="label">Repo &nbsp;·</span>
+      <span>github.com/ibrews/MetaHumanGodot</span>
+    </div>
+  </div>
+
+  <!-- Illustration -->
+  <svg class="illustration" viewBox="0 0 530 630" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <!-- Ambient glow behind head -->
+      <radialGradient id="aura" cx="48%" cy="46%" r="42%">
+        <stop offset="0%"   stop-color="#1b3d6a" stop-opacity="0.75"/>
+        <stop offset="60%"  stop-color="#0e1e38" stop-opacity="0.35"/>
+        <stop offset="100%" stop-color="#0b0f1a" stop-opacity="0"/>
+      </radialGradient>
+      <!-- Skin SSS effect -->
+      <radialGradient id="sss" cx="50%" cy="42%" r="38%">
+        <stop offset="0%"  stop-color="#c47a5a" stop-opacity="0.18"/>
+        <stop offset="100%" stop-color="#0b0f1a" stop-opacity="0"/>
+      </radialGradient>
+      <!-- Head fill -->
+      <linearGradient id="headFill" x1="20%" y1="0%" x2="80%" y2="100%">
+        <stop offset="0%"   stop-color="#2a4e7a"/>
+        <stop offset="55%"  stop-color="#1d3a5e"/>
+        <stop offset="100%" stop-color="#152c4a"/>
+      </linearGradient>
+      <!-- Orange slider gradient -->
+      <linearGradient id="sliderFill" x1="0%" y1="0%" x2="100%" y2="0%">
+        <stop offset="0%" stop-color="#d97a28"/>
+        <stop offset="100%" stop-color="#f0a84a"/>
+      </linearGradient>
+      <!-- Orbit ring gradient (subtle) -->
+      <linearGradient id="ringGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+        <stop offset="0%"   stop-color="#e8923a" stop-opacity="0.0"/>
+        <stop offset="40%"  stop-color="#e8923a" stop-opacity="0.35"/>
+        <stop offset="60%"  stop-color="#e8923a" stop-opacity="0.35"/>
+        <stop offset="100%" stop-color="#e8923a" stop-opacity="0.0"/>
+      </linearGradient>
+      <filter id="glow">
+        <feGaussianBlur stdDeviation="3" result="blur"/>
+        <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+      </filter>
+    </defs>
+
+    <!-- Aura / ambient -->
+    <ellipse cx="215" cy="295" rx="175" ry="210" fill="url(#aura)"/>
+    <!-- SSS glow -->
+    <ellipse cx="215" cy="270" rx="100" ry="115" fill="url(#sss)"/>
+
+    <!-- Shoulders / neck base -->
+    <path d="M 80 580 Q 90 490 120 460 L 145 430 L 175 415 L 175 435
+             Q 175 390 215 380
+             Q 255 390 255 435 L 255 415 L 285 430 L 310 460
+             Q 340 490 350 580 Z"
+          fill="url(#headFill)" opacity="0.85"/>
+
+    <!-- Neck -->
+    <path d="M 175 435 Q 175 395 215 382 Q 255 395 255 435
+             L 250 450 L 215 455 L 180 450 Z"
+          fill="#1d3a5e" opacity="0.9"/>
+
+    <!-- Head shape -->
+    <path d="M 140 230
+             Q 128 210 130 255
+             Q 132 300 145 340
+             Q 158 380 175 415
+             L 215 425 L 255 415
+             Q 272 380 285 340
+             Q 298 300 300 255
+             Q 302 210 290 230
+             Q 278 165 215 158
+             Q 152 165 140 230 Z"
+          fill="url(#headFill)" opacity="0.95"/>
+
+    <!-- Forehead highlight -->
+    <ellipse cx="215" cy="210" rx="50" ry="30" fill="#3a6090" opacity="0.25"/>
+
+    <!-- Eye sockets -->
+    <ellipse cx="188" cy="262" rx="18" ry="12" fill="#0e1c30" opacity="0.85"/>
+    <ellipse cx="242" cy="262" rx="18" ry="12" fill="#0e1c30" opacity="0.85"/>
+
+    <!-- Irises -->
+    <circle cx="188" cy="262" r="8" fill="#264d7a"/>
+    <circle cx="242" cy="262" r="8" fill="#264d7a"/>
+    <!-- Pupils -->
+    <circle cx="188" cy="262" r="4.5" fill="#080e18"/>
+    <circle cx="242" cy="262" r="4.5" fill="#080e18"/>
+    <!-- Specular highlights -->
+    <circle cx="184" cy="258" r="2.2" fill="white" opacity="0.85"/>
+    <circle cx="238" cy="258" r="2.2" fill="white" opacity="0.85"/>
+
+    <!-- Eyebrows -->
+    <path d="M 172 248 Q 188 242 205 246" stroke="#3a5e80" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+    <path d="M 225 246 Q 242 242 258 248" stroke="#3a5e80" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+
+    <!-- Nose -->
+    <path d="M 213 272 L 207 298 Q 215 304 223 298 L 217 272" fill="#1a3050" opacity="0.6"/>
+    <!-- Nose tip -->
+    <ellipse cx="215" cy="300" rx="8" ry="5" fill="#1a3050" opacity="0.5"/>
+
+    <!-- Lips -->
+    <path d="M 198 318 Q 215 326 232 318" stroke="#3a5e80" stroke-width="2" fill="none" stroke-linecap="round"/>
+    <path d="M 202 318 Q 215 315 228 318" stroke="#4a6e90" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+
+    <!-- Ear hints -->
+    <path d="M 138 255 Q 130 268 133 282 Q 136 292 141 288 Q 138 270 140 255 Z"
+          fill="#1d3a5e" opacity="0.8"/>
+    <path d="M 292 255 Q 300 268 297 282 Q 294 292 289 288 Q 292 270 290 255 Z"
+          fill="#1d3a5e" opacity="0.8"/>
+
+    <!-- Hair — flowing lines at top -->
+    <path d="M 148 225 Q 165 170 215 158 Q 265 170 282 225"
+          stroke="#3a5e82" stroke-width="3" fill="none" opacity="0.7" stroke-linecap="round"/>
+    <path d="M 155 215 Q 170 162 215 150 Q 260 162 275 215"
+          stroke="#2a4e72" stroke-width="2" fill="none" opacity="0.55" stroke-linecap="round"/>
+    <path d="M 162 208 Q 178 158 215 146 Q 252 158 268 208"
+          stroke="#22406a" stroke-width="1.5" fill="none" opacity="0.4" stroke-linecap="round"/>
+
+    <!-- ─── Slider panel ─── -->
+    <rect x="340" y="140" width="155" height="270" rx="10"
+          fill="#080d18" opacity="0.82"/>
+    <rect x="340" y="140" width="155" height="270" rx="10"
+          fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="1"/>
+
+    <!-- Panel header -->
+    <text x="354" y="162" font-family="'Inter',sans-serif" font-size="9" font-weight="700"
+          fill="#2e4060" letter-spacing="1.5">LOOK DEV</text>
+
+    <!-- Divider -->
+    <line x1="354" y1="168" x2="481" y2="168" stroke="#1a2840" stroke-width="1"/>
+
+    <!-- Slider macro: SKIN TONE -->
+    <text x="354" y="188" font-family="'Inter',sans-serif" font-size="8.5" font-weight="600"
+          fill="#3e5575" letter-spacing="1.2">SKIN TONE</text>
+    <rect x="354" y="195" width="123" height="3" rx="1.5" fill="#12253d"/>
+    <rect x="354" y="195" width="82" height="3" rx="1.5" fill="url(#sliderFill)"/>
+    <circle cx="436" cy="196.5" r="5.5" fill="#e8923a" filter="url(#glow)"/>
+
+    <!-- Slider: LIGHTING -->
+    <text x="354" y="222" font-family="'Inter',sans-serif" font-size="8.5" font-weight="600"
+          fill="#3e5575" letter-spacing="1.2">LIGHTING</text>
+    <rect x="354" y="229" width="123" height="3" rx="1.5" fill="#12253d"/>
+    <rect x="354" y="229" width="55" height="3" rx="1.5" fill="url(#sliderFill)"/>
+    <circle cx="409" cy="230.5" r="5.5" fill="#e8923a" filter="url(#glow)"/>
+
+    <!-- Slider: HAIR -->
+    <text x="354" y="256" font-family="'Inter',sans-serif" font-size="8.5" font-weight="600"
+          fill="#3e5575" letter-spacing="1.2">HAIR</text>
+    <rect x="354" y="263" width="123" height="3" rx="1.5" fill="#12253d"/>
+    <rect x="354" y="263" width="98" height="3" rx="1.5" fill="url(#sliderFill)"/>
+    <circle cx="452" cy="264.5" r="5.5" fill="#e8923a" filter="url(#glow)"/>
+
+    <!-- Slider: SUBSURFACE -->
+    <text x="354" y="290" font-family="'Inter',sans-serif" font-size="8.5" font-weight="600"
+          fill="#3e5575" letter-spacing="1.2">SUBSURFACE</text>
+    <rect x="354" y="297" width="123" height="3" rx="1.5" fill="#12253d"/>
+    <rect x="354" y="297" width="44" height="3" rx="1.5" fill="url(#sliderFill)"/>
+    <circle cx="398" cy="298.5" r="5.5" fill="#e8923a" filter="url(#glow)"/>
+
+    <!-- Slider: ROUGHNESS -->
+    <text x="354" y="324" font-family="'Inter',sans-serif" font-size="8.5" font-weight="600"
+          fill="#3e5575" letter-spacing="1.2">ROUGHNESS</text>
+    <rect x="354" y="331" width="123" height="3" rx="1.5" fill="#12253d"/>
+    <rect x="354" y="331" width="70" height="3" rx="1.5" fill="url(#sliderFill)"/>
+    <circle cx="424" cy="332.5" r="5.5" fill="#e8923a" filter="url(#glow)"/>
+
+    <!-- Slider: EYE WET -->
+    <text x="354" y="358" font-family="'Inter',sans-serif" font-size="8.5" font-weight="600"
+          fill="#3e5575" letter-spacing="1.2">EYE WET</text>
+    <rect x="354" y="365" width="123" height="3" rx="1.5" fill="#12253d"/>
+    <rect x="354" y="365" width="110" height="3" rx="1.5" fill="url(#sliderFill)"/>
+    <circle cx="464" cy="366.5" r="5.5" fill="#e8923a" filter="url(#glow)"/>
+
+    <!-- Orbit arc below head -->
+    <ellipse cx="215" cy="490" rx="118" ry="22"
+             fill="none" stroke="url(#ringGrad)" stroke-width="1.2"/>
+    <!-- dashed complement arc -->
+    <ellipse cx="215" cy="490" rx="118" ry="22"
+             fill="none" stroke="#e8923a" stroke-width="0.8" opacity="0.15"
+             stroke-dasharray="18,28"/>
+
+    <!-- Orbit dot (camera position indicator) -->
+    <circle cx="333" cy="490" r="3.5" fill="#e8923a" opacity="0.8"/>
+
+    <!-- JSON save icon hint (small, bottom-right corner of panel) -->
+    <text x="430" y="398" font-family="'Inter',sans-serif" font-size="8" font-weight="700"
+          fill="#2e4060" letter-spacing="1">SAVE JSON</text>
+    <rect x="430" y="401" width="55" height="16" rx="3"
+          fill="rgba(232,146,58,0.12)" stroke="rgba(232,146,58,0.25)" stroke-width="1"/>
+    <text x="449" y="413" font-family="'Inter',sans-serif" font-size="8" font-weight="600"
+          fill="#e8923a">EXPORT</text>
+  </svg>
+
+  <div class="tags-left">Godot 4.6 · GDScript · MetaHuman · MatMADNESS HumanShader</div>
+  <div class="tags-right">Skin · Lighting · Hair · Orbit Camera · JSON Export</div>
+</body>
+</html>

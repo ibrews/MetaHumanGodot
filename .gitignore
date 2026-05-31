@@ -23,6 +23,7 @@ character.glb
 *.glb
 *.fbx
 *.png
+!social.png
 *.exr
 *.tga
 *.hdr
