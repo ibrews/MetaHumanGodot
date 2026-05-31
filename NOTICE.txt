@@ -1,0 +1,49 @@
+================================================================================
+  MetaHuman -> Godot  •  Look-Dev  —  NOTICE
+================================================================================
+
+Tool & shaders:  © 2026 Agile Lens.  Released under the MIT License (see LICENSE).
+Skin / eye shaders are based on MatMADNESS HumanShaders (MIT), which build upon
+RustyRoboticsBV/GodotStandardLightShader.
+
+--------------------------------------------------------------------------------
+  UNREAL® ENGINE / METAHUMAN  (Epic Games, Inc.)
+--------------------------------------------------------------------------------
+
+This product contains digital human character and animation assets created using
+Epic Games' MetaHuman framework and Unreal® Engine, and is distributed under the
+Unreal Engine End User License Agreement:
+    https://www.unrealengine.com/eula/unreal
+
+Required notices:
+
+    MetaHuman Godot Look-Dev uses Unreal® Engine. Unreal® is a trademark or
+    registered trademark of Epic Games, Inc. in the United States of America and
+    elsewhere.
+
+    Unreal® Engine, Copyright 1998 - 2026, Epic Games, Inc. All rights reserved.
+
+Trademarks:
+    Unreal, Unreal Engine, MetaHuman, and their logos are trademarks or
+    registered trademarks of Epic Games, Inc. All other trademarks are the
+    property of their respective owners.
+
+Not affiliated:
+    Agile Lens / MetaHuman Godot Look-Dev is an independent project and is not
+    affiliated with, sponsored by, or endorsed by Epic Games, Inc.
+
+Non-Engine Products / royalties:
+    MetaHuman character and animation assets are "Non-Engine Products" under the
+    Unreal Engine EULA and are distributed here royalty-free (free for use under
+    $1M USD annual gross revenue; an Unreal Engine seat license applies above
+    that threshold).
+
+Use restrictions (passed through from the Unreal Engine EULA):
+    The MetaHuman character and animation assets in this product may not be
+    extracted for incorporation into other products, nor used to build or
+    enhance any database, or to train or test any artificial intelligence,
+    machine learning, or similar systems.
+
+This notice is provided for transparency and is not legal advice.
+
+================================================================================

@@ -2,7 +2,8 @@
 /.godot/
 /.import/
 export.cfg
-export_presets.cfg
+# export_presets.cfg IS committed (reproducible builds); it has no secrets for
+# the Windows Desktop preset.
 
 # ── Local user state ─────────────────────────────────────────────────────────
 look_settings.json
@@ -34,6 +35,10 @@ character.glb
 *.exr.import
 *.tga.import
 *.hdr.import
+# ...but keep our own drawn app icon (not a MetaHuman asset).
+!icon.png
+# ...and the README screenshots (rendered output is license-permitted).
+!docs/*.png
 
 # ── Dev cruft / local backups — not for publication ──────────────────────────
 *.bak

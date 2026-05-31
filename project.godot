@@ -17,9 +17,9 @@ compatibility/default_parent_skeleton_in_mesh_instance_3d=true
 config/name="MetaHumanGodotPilot"
 config/description="MetaHuman exported from UE5 5.7 → Blender → Godot 4.6 with MatMADNESS HumanShaders.
 First fleet run; documenting gotchas in the KB technique doc."
-run/main_scene="res://scenes/emote_render.tscn"
+run/main_scene="res://scenes/look_dev.tscn"
 config/features=PackedStringArray("4.6", "Forward Plus")
-config/icon="res://icon.svg"
+config/icon="res://icon.png"
 
 [display]
 
