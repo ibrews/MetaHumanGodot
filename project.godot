@@ -17,17 +17,24 @@ compatibility/default_parent_skeleton_in_mesh_instance_3d=true
 config/name="MetaHumanGodotPilot"
 config/description="MetaHuman exported from UE5 5.7 → Blender → Godot 4.6 with MatMADNESS HumanShaders.
 First fleet run; documenting gotchas in the KB technique doc."
-run/main_scene="res://scenes/look_dev.tscn"
+run/main_scene="res://scenes/release.tscn"
 config/features=PackedStringArray("4.6", "Forward Plus")
 config/icon="res://icon.png"
 
 [display]
 
-window/size/viewport_width=2160
-window/size/viewport_height=2160
+window/size/viewport_width=1280
+window/size/viewport_height=1280
+window/size/mode=0
+window/size/resizable=true
+window/size/borderless=false
 
 [rendering]
 
+renderer/rendering_method="forward_plus"
+renderer/rendering_method.mobile="forward_plus"
+environment/subsurface_scattering/subsurface_scattering_quality=2
+environment/subsurface_scattering/subsurface_scattering_scale=0.08
 anti_aliasing/quality/msaa_3d=3
 anti_aliasing/quality/screen_space_aa=0
 anti_aliasing/quality/use_taa=false
