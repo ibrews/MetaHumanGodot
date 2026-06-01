@@ -1,11 +1,13 @@
 # MetaHuman → Godot Look-Dev
 
-> ⚠️ **Not an Epic Games product.** This is an independent, community tool made by
-> Agile Lens. It is **not** created, published, endorsed, sponsored by, or
-> affiliated with Epic Games, and is **not** official MetaHuman or Unreal Engine
-> software. The repository name "MetaHumanGodot" describes what the tool *works
-> with* — it does not imply any official Epic support. "MetaHuman", "Unreal", and
-> "Unreal Engine" are trademarks of Epic Games, Inc. See [Licensing](#licensing).
+> ⚠️ **Not an Epic Games or Godot Foundation product.** This is an independent,
+> community tool made by Agile Lens. It is **not** created, published, endorsed,
+> sponsored by, or affiliated with Epic Games or the Godot Foundation, and is
+> **not** official MetaHuman, Unreal Engine, or Godot software. The repository
+> name "MetaHumanGodot" describes what the tool *works with* — it does not imply
+> any official support from either organisation. "MetaHuman", "Unreal Engine", and
+> "Unreal" are trademarks of Epic Games, Inc. "Godot" is a trademark of the Godot
+> Foundation. See [Licensing](#licensing).
 
 A real-time **look-development tool for MetaHuman characters in Godot 4.6** — dial
 in skin, lighting, and hair with live sliders and an orbit camera, then save the
