@@ -130,6 +130,7 @@ var p := {
 	"sss": 0.1, "skin_smooth": 0.62, "skin_nrm": 1.65, "skin_rough": 0.59,
 	"skin_spec": 0.33, "scatter": 2.15, "double_spec": false, "sss_depth": 6.0,
 	"micro": 0.0,
+	"skin_tint": Color(1, 1, 1),   # multiplies the albedo (HDR: >1 lightens) — recolour skin
 	# hair
 	"hair_col": Color(0.20, 0.13, 0.075), "hair_thresh": 0.07,
 	"hair_root": 0.42, "hair_rough": 0.72, "hair_spec": 0.12,
@@ -151,8 +152,8 @@ var p := {
 	# "alive eyes": look at the camera with naturalistic saccades + blinks (demo). When
 	# on, it overrides the manual focal point above.
 	"eye_alive": true,
-	# DEBUG: horizontal stretch of the UE overlay image (align-aid; remove later)
-	"overlay_stretch_x": 1.0,
+	# DEBUG: UE overlay align-aids (remove later) — horizontal stretch + sideways scoot (px)
+	"overlay_stretch_x": 1.0, "overlay_off_x": 0.0,
 }
 
 var _char_key := "guy"
@@ -1350,6 +1351,7 @@ func _setup_ui() -> void:
 	_slider(vb, "view_pan", "View pan (subject X)", -1.0, 1.0, 0.01)
 	_slider(vb, "overlay", "UE overlay opacity", 0.0, 1.0, 0.01)
 	_slider(vb, "overlay_stretch_x", "Overlay stretch X (debug)", 0.9, 1.1, 0.001)
+	_slider(vb, "overlay_off_x", "Overlay scoot X px (debug)", -1200.0, 1200.0, 5.0)
 	_slider(vb, "zoff", "Depth nudge (m)", -0.5, 0.5, 0.005)
 
 	_section(vb, "LIGHTING — energy")
@@ -1378,6 +1380,7 @@ func _setup_ui() -> void:
 	_color(vb, "bg_col", "Background colour")
 
 	_section(vb, "SKIN (face + body)")
+	_color(vb, "skin_tint", "Skin colour (tint)")
 	_slider(vb, "sss", "Subsurface", 0.0, 1.0, 0.01)
 	_slider(vb, "scatter", "Scatter strength", 0.0, 3.0, 0.01)
 	_slider(vb, "skin_smooth", "Skin smoothness", 0.0, 4.0, 0.01)
@@ -1734,6 +1737,7 @@ func _apply_all() -> void:
 		if _camera:
 			_catch.global_transform.origin = _camera.global_transform.origin + _camera.global_transform.basis.y * 0.12
 	for m in _skin_mats:
+		m.set_shader_parameter("albedo", p.skin_tint)
 		m.set_shader_parameter("subsurface_scattering_strength", p.sss)
 		m.set_shader_parameter("scatter_strength", p.scatter)
 		m.set_shader_parameter("skin_smoothness", p.skin_smooth)
@@ -1770,6 +1774,10 @@ func _apply_all() -> void:
 		var vp := get_viewport().get_visible_rect().size
 		_overlay.pivot_offset = vp * 0.5
 		_overlay.scale = Vector2(sx, 1.0)
+		# Scoot the overlay sideways (px) so both faces sit side-by-side while tuning.
+		var ox: float = float(p.get("overlay_off_x", 0.0))
+		_overlay.offset_left = ox
+		_overlay.offset_right = ox
 	if _cam_attrs and not OS.has_environment("RELEASE_CAPTURE"):
 		var blur: float = float(p.get("dof_blur", 0.0))
 		var enabled: bool = blur > 0.001
