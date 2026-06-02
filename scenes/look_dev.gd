@@ -426,7 +426,7 @@ func _make_placeholder_skin() -> ShaderMaterial:
 	mat.set_shader_parameter("skin_smoothness", 1.2)
 	mat.set_shader_parameter("skin_fallof_smoothness", 1.05)
 	mat.set_shader_parameter("old_lightwarp_fallof", false)
-	mat.set_shader_parameter("tinted_shadow_penumbra", false)
+	mat.set_shader_parameter("tinted_shadow_penumbra", true)  # warm fleshy terminator (microdancing look)
 	mat.set_shader_parameter("use_micro_detail", false)
 	mat.set_shader_parameter("micro_normal_strength", 0.0)
 	mat.set_shader_parameter("use_ambient_occlusion", false)
@@ -793,7 +793,7 @@ func _make_skin_shader_material(bc_path: String, normal_path: String,
 	mat.set_shader_parameter("skin_smoothness", 1.2)
 	mat.set_shader_parameter("skin_fallof_smoothness", 1.05)
 	mat.set_shader_parameter("old_lightwarp_fallof", false)
-	mat.set_shader_parameter("tinted_shadow_penumbra", false)
+	mat.set_shader_parameter("tinted_shadow_penumbra", true)  # warm fleshy terminator (microdancing look)
 	if ResourceLoader.exists("res://skin_micro_n.png"):
 		mat.set_shader_parameter("texture_micro_detail", load("res://skin_micro_n.png") as Texture2D)
 		mat.set_shader_parameter("use_micro_detail", true)
@@ -1095,7 +1095,7 @@ func _build_ui() -> void:
 	_mkcheck(vb, "use_sss", "use_subsurface_scattering", true, _skin_setter_b("use_subsurface_scattering"))
 	_mkcheck(vb, "use_micro", "use_micro_detail", true, _skin_setter_b("use_micro_detail"))
 	_mkcheck(vb, "use_scatter", "use_scatter_map", true, _skin_setter_b("use_scatter_map"))
-	_mkcheck(vb, "tinted_pen", "tinted_shadow_penumbra", false, _skin_setter_b("tinted_shadow_penumbra"))
+	_mkcheck(vb, "tinted_pen", "tinted_shadow_penumbra", true, _skin_setter_b("tinted_shadow_penumbra"))
 
 	# ── KEY LIGHT ─────────────────────────────────────────────────────────
 	_hdr(vb, "Key light")

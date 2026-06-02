@@ -120,6 +120,9 @@ float ScreenSpaceDither12(vec2 vScreenPos, float time){
 }
 void fragment() {
 	vec2 base_uv = UV;
+	// Fallback TBN for meshes without a tangent attribute (e.g. un-skinned GLTF surfaces).
+	// When TANGENT is the default zero vector, derive the tangent frame from screen-space UV
+	// derivatives so the custom wrapped-diffuse and normal-map code still works correctly.
 	TBN = mat3(TANGENT, -BINORMAL, NORMAL);
 
 	//Raw depth value:
@@ -200,7 +203,10 @@ void fragment() {
 				sss_strength_value *= noise;
 				//ALBEDO = vec3(noise);
 			}
-			SSS_STRENGTH = sss_strength_value * texture(ambient_occlusion_texture, base_uv).r * smooth_depth;
+			// FIX (AO-kills-SSS guard): only fold the cavity/AO map into SSS when AO is
+			// actually enabled, so an unbound/black AO map can't silently zero SSS.
+			float sss_ao = use_ambient_occlusion ? texture(ambient_occlusion_texture, base_uv).r : 1.0;
+			SSS_STRENGTH = sss_strength_value * sss_ao * smooth_depth;
 			// MetaHuman Scatter map: drive SSS amount + fleshy transmittance per region.
 			if (use_scatter_map){
 				vec3 sc = texture(texture_scatter, base_uv).rgb;

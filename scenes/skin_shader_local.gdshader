@@ -52,7 +52,13 @@ uniform bool use_noise = true;
 uniform float subsurface_scattering_strength : hint_range(0.0, 1.0, 0.01) = 0.4;
 uniform float skin_smoothness : hint_range(0.0, 10.0) = 5.0;
 uniform float skin_fallof_smoothness : hint_range(0.7, 2.0, 0.01) = 1.0;
-uniform bool tinted_shadow_penumbra = false;
+// FIX (ported from skin_shader_explainer): the original linear_depth = clamp(1 + view.z/1.0)
+// gates SSS off beyond ~1m (hero-closeup assumption). At portrait/turntable distance
+// (~1.65m) view.z≈-1.65 → linear_depth=0 → SSS skipped. Divide view.z by this larger
+// scale so SSS engages at look-dev distance. Higher = SSS reaches further from camera.
+uniform float sss_depth_scale = 6.0;
+// FIX: warm shadow-terminator tint (the fleshy microdancing look). Default ON now.
+uniform bool tinted_shadow_penumbra = true;
 uniform bool old_lightwarp_fallof = false;
 uniform sampler2D lightwarp : source_color, filter_linear, repeat_disable;
 uniform sampler2D texture_sss_noise : filter_linear, repeat_enable, source_color;
@@ -125,8 +131,8 @@ void fragment() {
 	vec4 view = INV_PROJECTION_MATRIX * vec4(ndc, 1.0);
 	view.xyz /= view.w;
 
-	// reverse
-	linear_depth = clamp(1. + (view.z / 1.0), 0., 1.);
+	// reverse  (FIX: divisor was 1.0 → SSS gated off past ~1m; now tunable)
+	linear_depth = clamp(1. + (view.z / sss_depth_scale), 0., 1.);
 	smooth_depth = smoothstep(0.0, 0.6, linear_depth);
 
 	sss_tex = texture(texture_translucency, base_uv).b;
@@ -195,7 +201,11 @@ void fragment() {
 				sss_strength_value *= noise;
 				//ALBEDO = vec3(noise);
 			}
-			SSS_STRENGTH = sss_strength_value * texture(ambient_occlusion_texture, base_uv).r * smooth_depth;
+			// FIX (AO-kills-SSS guard): only fold the cavity/AO map into SSS when AO is
+			// actually enabled. The generic skin_micro_cav map is mostly black, so an
+			// unconditional multiply silently zeroed SSS whenever use_ambient_occlusion=false.
+			float sss_ao = use_ambient_occlusion ? texture(ambient_occlusion_texture, base_uv).r : 1.0;
+			SSS_STRENGTH = sss_strength_value * sss_ao * smooth_depth;
 			// MetaHuman Scatter map: drive SSS amount + fleshy transmittance per region.
 			if (use_scatter_map){
 				vec3 sc = texture(texture_scatter, base_uv).rgb;
