@@ -40,8 +40,17 @@ const PROFILES := {
 	"her": {
 		"label": "Her — MH_Explainer",
 		"glb": "res://character_explainer.glb",
-		"face_mode": "name",                       # wire face surfaces by material name
+		# Wire by SURFACE INDEX, not material name. The MetaHuman face material
+		# names are misleading leftovers from the UE bake: surface 0 is named
+		# "..Teeth_Baked.." but is actually the MAIN face skin geometry (24K verts),
+		# while the tiny "..Skin_Baked.." surface 7 is a 276-vert cap. Her face has
+		# the IDENTICAL 9-surface layout as the guy, so the guy's verified map
+		# applies unchanged. (Name-based wiring left surface 0 on its baked teeth
+		# material → the whole face rendered flat gray.)
+		"face_mode": "index",
 		"face_mesh_name": "Face",
+		"face_index_map": {0: "skin", 1: "teeth", 2: "hide", 3: "eyeR", 4: "eyeL",
+			5: "hide", 6: "hide", 7: "skin", 8: "hide"},
 		"head_bc": "exp_head_bc.png", "head_n": "exp_head_n.png",
 		"head_srmf": "exp_head_srmf.png", "head_scatter": "exp_head_scatter.png",
 		"body_bc": "exp_body_bc.png", "body_n": "exp_body_n.png",
@@ -49,6 +58,8 @@ const PROFILES := {
 		"iris_tpl": "exp_eye_iris_%s_bc.png", "iris_n_tpl": "exp_eye_iris_%s_n.png",
 		"sclera_tpl": "exp_eye_sclera_%s_bc.png", "sclera_n_tpl": "exp_eye_sclera_%s_n.png",
 		"hair_atlases": [["Hair_", "exp_hair_atlas.png", Color(0.20, 0.13, 0.075)]],
+		"outfit_color": Color(0.86, 0.87, 0.90),   # white tee (contrast vs the guy)
+		"overlay_img": "her_ue_ref0.png",          # her UE moonlight cinecam render (2026-06-01)
 		"default_preset": "her__moonlight",
 	},
 	"guy": {
@@ -74,7 +85,9 @@ const PROFILES := {
 			["Mustache_", "mustache_attr.png", Color(0.28, 0.205, 0.115)],
 			["Moustache_", "mustache_attr.png", Color(0.28, 0.205, 0.115)],
 		],
-		"default_preset": "guy__studio",
+		"outfit_color": Color(0.045, 0.05, 0.06),   # black tee (contrast vs her white)
+		"overlay_img": "guy_ue_ref0.png",           # UE moonlight cinecam render (black shirt)
+		"default_preset": "guy__moonlight",
 	},
 }
 const CHAR_ORDER := ["her", "guy"]
@@ -112,6 +125,7 @@ var p := {
 	"rim_col": Color(93.0/255, 62.0/255, 32.0/255),
 	"amb_col": Color(0.0, 24.0/255, 139.0/255),
 	"catch_col": Color(1.0, 0.98, 0.95),
+	"bg_col": Color(0.050, 0.118, 0.280),   # backdrop tint (preset-driven for mood)
 	# skin
 	"sss": 0.1, "skin_smooth": 0.62, "skin_nrm": 1.65, "skin_rough": 0.59,
 	"skin_spec": 0.33, "scatter": 2.15, "double_spec": false, "sss_depth": 6.0,
@@ -129,12 +143,15 @@ var p := {
 	"model_yaw": 272.5, "overlay": 0.0, "zoff": 0.0,
 	"view_pan": -1.2,    # interactive frustum shift so subject clears the panel
 	"cap_pan": -0.176,   # capture-time centering
+	# DOF (applied to _cam_attrs)
+	"dof_focus": 1.3, "dof_blur": 0.0,
 }
 
-var _char_key := "her"
+var _char_key := "guy"
 var _profile := {}
 var _character: Node3D
 var _env: Environment
+var _backdrop_mat: ShaderMaterial
 var _lights := {}
 var _catch: OmniLight3D
 var _skin_mats: Array[ShaderMaterial] = []
@@ -147,16 +164,87 @@ var _bs_map := {}          # shape name -> Array of [MeshInstance3D, idx]
 var _bs_values := {}       # shape name -> float (current)
 
 var _overlay: TextureRect
+var _overlay_available := false
 var _panel: Control
+var _panel_handle: Panel
+var _panel_collapse_btn: Button
+var _panel_width := 360.0
+var _panel_prev_width := 360.0
+var _panel_dragging := false
 var _bs_panel: Control
+var _bs_handle: Panel
+var _bs_collapse_btn: Button
+var _bs_width := 380.0
+var _bs_prev_width := 380.0
+var _bs_dragging := false
 var _bs_rows := {}         # name -> {slider, spin, label}
 var _camera: Camera3D
+var _cam_attrs: CameraAttributesPractical
 var _preset_name: LineEdit
 var _preset_dd: OptionButton
 var _char_btn: Button
 var _status: Label
 var _refreshers: Array = []
 var _file_dialog: FileDialog
+
+# ---- orbit camera rig -------------------------------------------------------
+# Default interactive framing: a gentle 3/4 head-and-shoulders portrait. Target
+# the face (y≈1.52, not the crown at 1.74) and pull back to 1.5 m so the subject
+# fills the frame instead of sitting low with empty space above. Yaw -72° lines
+# the orbit up with the front-3/4 of the model (which loads at model_yaw 272.5).
+const DEFAULT_ORBIT_YAW   := -72.0
+const DEFAULT_ORBIT_PITCH := 6.5
+const DEFAULT_ORBIT_DIST  := 1.5
+# Aim at the upper chest (≈1.33) rather than the face: this lifts the figure so
+# the hair sits near the TOP of the frame (head-and-shoulders), per the request.
+const DEFAULT_ORBIT_TARGET := Vector3(0.0, 1.33, 0.0)
+var _orbit_yaw   := DEFAULT_ORBIT_YAW
+var _orbit_pitch := DEFAULT_ORBIT_PITCH
+var _orbit_dist  := DEFAULT_ORBIT_DIST
+var _orbit_target := DEFAULT_ORBIT_TARGET
+var _drag_mode   := 0     # 0=none 1=orbit 2=pan
+var _orbit_fov   := 28.0
+var _turntable   := false
+const TURNTABLE_SPEED := 18.0   # deg/s
+
+# ---- hero camera (ping-pong push-in) + animation (ported from look_dev.gd) --
+var _hero_cam := false
+var _hero_elapsed := 0.0
+const HERO_DURATION := 15.0
+const HERO_WIDE_POS := Vector3(0.0, 1.25, 4.3)     # full body
+const HERO_CLOSE_POS := Vector3(0.08, 1.74, 0.50)  # tight face
+const HERO_WIDE_FOV := 40.0
+const HERO_CLOSE_FOV := 24.0
+const HERO_WIDE_AIM := Vector3(0.0, 1.02, 0.0)
+var _head_world := Vector3(0.0, 1.62, 0.05)
+
+var _anim_playing := false
+var _face_anim_player: AnimationPlayer
+var _body_anim_player: AnimationPlayer
+const ANIM_DURATION := 8.4
+const KEYPOSES := {
+	"neutral": {},
+	"smile": {"mouthSmileLeft": 0.5, "mouthSmileRight": 0.5, "cheekSquintLeft": 0.18, "cheekSquintRight": 0.18},
+	"surprise": {"jawOpen": 0.38, "browInnerUp": 0.65, "browOuterUpLeft": 0.5, "browOuterUpRight": 0.5, "eyeWideLeft": 0.55, "eyeWideRight": 0.55, "mouthFunnel": 0.18},
+	"blink": {"eyeBlinkLeft": 1.0, "eyeBlinkRight": 1.0},
+	"frown": {"mouthFrownLeft": 0.5, "mouthFrownRight": 0.5, "browDownLeft": 0.45, "browDownRight": 0.45, "mouthLowerDownLeft": 0.18, "mouthLowerDownRight": 0.18},
+}
+const KEY_TIMES := [
+	[0.0, "neutral"], [0.7, "smile"], [1.9, "neutral"], [2.5, "surprise"],
+	[3.5, "neutral"], [3.9, "blink"], [4.3, "frown"], [5.0, "neutral"], [5.7, "smile"], [8.2, "smile"],
+]
+# face-follow bind state (glue the separate face armature to the animated head bone)
+var _body_skeleton: Skeleton3D
+var _head_bone_idx := -1
+var _face_armature: Node3D
+var _face_arm_rest_origin := Vector3.ZERO
+var _face_arm_rest_basis := Basis.IDENTITY
+var _face_arm_rest_local := Transform3D.IDENTITY
+var _skel_basis_norm := Basis.IDENTITY
+var _skel_scale_factor := 1.0
+var _skel_bind_origin := Vector3.ZERO
+var _head_world_bind_origin := Vector3.ZERO
+var _head_world_bind_basis := Basis.IDENTITY
 
 var _movie := false
 var _movie_total := 120
@@ -177,17 +265,27 @@ vw.release(); print('wrote', out, w, 'x', h, len(files), 'frames')
 """
 
 func _ready() -> void:
-	_char_key = OS.get_environment("RELEASE_CHAR") if OS.has_environment("RELEASE_CHAR") else "her"
+	_char_key = OS.get_environment("RELEASE_CHAR") if OS.has_environment("RELEASE_CHAR") else "guy"
 	if not PROFILES.has(_char_key):
-		_char_key = "her"
+		_char_key = "guy"
 	_profile = PROFILES[_char_key]
-	# start from the character's default preset, if shipped
-	_load_preset_file("%s/%s.json" % [PRESET_DIR, _profile.get("default_preset", "")])
+	# start from the character's default preset, if shipped (RELEASE_PRESET overrides
+	# the basename for QA, e.g. RELEASE_PRESET=her__sunset)
+	var _start_preset: String = OS.get_environment("RELEASE_PRESET") if OS.has_environment("RELEASE_PRESET") else _profile.get("default_preset", "")
+	_load_preset_file("%s/%s.json" % [PRESET_DIR, _start_preset])
 	if OS.has_environment("MOVIE_FRAMES"):
 		_movie_total = max(2, int(OS.get_environment("MOVIE_FRAMES")))
 	_setup_world(); _setup_backdrop(); _setup_lights(); _setup_camera()
 	_load_character()
 	_setup_ui()
+	# Headless QA hook: RELEASE_BS="jawOpen=1.0,eyeBlinkLeft=1.0" drives shapes.
+	# Applied BEFORE the toggle so RELEASE_BS + RELEASE_TOGGLE together prove that
+	# an ARKit pose persists across a character swap (the toggled capture shows it).
+	if OS.has_environment("RELEASE_BS"):
+		for tok in OS.get_environment("RELEASE_BS").split(","):
+			var kv := tok.split("=")
+			if kv.size() == 2:
+				_set_blendshape(kv[0].strip_edges(), float(kv[1]))
 	# Headless QA hook: RELEASE_TOGGLE=1 exercises the live character switch.
 	if OS.has_environment("RELEASE_TOGGLE"):
 		_switch_character()
@@ -196,17 +294,23 @@ func _ready() -> void:
 		_load_character(OS.get_environment("RELEASE_CUSTOM"))
 		_rebuild_bs_panel(); _refresh_controls()
 	_apply_all()
-	# Headless QA hook: RELEASE_BS="jawOpen=1.0,eyeBlinkLeft=1.0" drives shapes.
-	if OS.has_environment("RELEASE_BS"):
-		for tok in OS.get_environment("RELEASE_BS").split(","):
-			var kv := tok.split("=")
-			if kv.size() == 2:
-				_set_blendshape(kv[0].strip_edges(), float(kv[1]))
+	# Headless QA hooks for the toggles. RELEASE_ANIM_SEEK sets the face-anim time.
+	if OS.has_environment("RELEASE_ANIM"):
+		_set_anim_playing(true)
+		if _face_anim_player and OS.has_environment("RELEASE_ANIM_SEEK"):
+			_face_anim_player.seek(_envf("RELEASE_ANIM_SEEK", 0.0), true)
+	if OS.has_environment("RELEASE_HERO"):
+		_set_hero_cam(true)
+		_hero_elapsed = _envf("RELEASE_HERO_T", 0.0)
+		_update_hero_camera()
 	# Headless: RELEASE_CAPTURE=1 -> still (+ RELEASE_MOVIE=1 -> 120f turntable).
 	if OS.has_environment("RELEASE_CAPTURE"):
-		if _panel: _panel.visible = false
-		if _bs_panel: _bs_panel.visible = false
-		if _overlay: _overlay.modulate.a = 0.0
+		if not OS.has_environment("SHOW_CHROME"):
+			_hide_chrome()
+		elif _bs_panel:    # SHOW_CHROME: also reveal the ARKit panel for QA
+			_bs_panel.visible = true
+			if _bs_handle: _bs_handle.visible = true
+			if _bs_collapse_btn: _bs_collapse_btn.visible = true
 		await get_tree().create_timer(0.6).timeout
 		await RenderingServer.frame_post_draw
 		DirAccess.make_dir_recursive_absolute(OUT_DIR)
@@ -235,7 +339,7 @@ func _envf(n: String, d: float) -> float:
 func _setup_world() -> void:
 	_env = Environment.new()
 	_env.background_mode = Environment.BG_COLOR
-	_env.background_color = Color(0.050, 0.118, 0.280)
+	_env.background_color = p.get("bg_col", Color(0.050, 0.118, 0.280))
 	_env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	_env.ambient_light_color = Color(0.0, 0.094, 0.545)
 	_env.ambient_light_energy = p.env_amb
@@ -258,8 +362,9 @@ func _setup_world() -> void:
 	var we := WorldEnvironment.new(); we.environment = _env; add_child(we)
 
 func _setup_backdrop() -> void:
-	var quad := QuadMesh.new(); quad.size = Vector2(26, 16)
-	var mi := MeshInstance3D.new(); mi.mesh = quad; mi.position = Vector3(0, 1.4, -3.0)
+	# Large + further back so its edges never enter frame at any orbit angle.
+	var quad := QuadMesh.new(); quad.size = Vector2(80, 50)
+	var mi := MeshInstance3D.new(); mi.mesh = quad; mi.position = Vector3(0, 1.4, -6.0)
 	var sh := Shader.new()
 	sh.code = """
 shader_type spatial;
@@ -278,6 +383,17 @@ void fragment() {
 }
 """
 	var sm := ShaderMaterial.new(); sm.shader = sh; mi.material_override = sm; add_child(mi)
+	_backdrop_mat = sm
+	_apply_backdrop_color()
+
+# Tint the backdrop gradient + environment bg from p.bg_col (drives mood variety).
+func _apply_backdrop_color() -> void:
+	var bg: Color = p.get("bg_col", Color(0.050, 0.118, 0.280))
+	if _env: _env.background_color = bg
+	if _backdrop_mat:
+		_backdrop_mat.set_shader_parameter("top_col", bg.darkened(0.12))
+		_backdrop_mat.set_shader_parameter("bot_col", bg.lightened(0.06))
+		_backdrop_mat.set_shader_parameter("glow_col", bg.lightened(0.12))
 
 # ---- lights (ported UE moonlight rig) ---------------------------------------
 func _spot(nm: String, ue_loc: Array, pitch: float, yaw: float, col: Color,
@@ -313,20 +429,225 @@ func _setup_lights() -> void:
 
 func _setup_camera() -> void:
 	_camera = Camera3D.new(); _camera.name = "Camera3D"
-	_camera.fov = _envf("RELEASE_FOV", 16.0); _camera.near = 0.05; _camera.far = 100.0
-	_camera.position = _ue_pos(160.0, -42.0, 158.0)
-	var fwd := _ue_forward(-4.0, 165.0)
-	_camera.look_at_from_position(_camera.position, _camera.position + fwd, Vector3.UP)
-	if OS.has_environment("KEEP_PAN") or not OS.has_environment("RELEASE_CAPTURE"):
-		_camera.h_offset = p.view_pan
-	else:
-		_camera.h_offset = _envf("CAP_H", p.get("cap_pan", 0.0))
+	_camera.near = 0.05; _camera.far = 100.0
+	_cam_attrs = CameraAttributesPractical.new()
+	_cam_attrs.dof_blur_far_enabled = false
+	_cam_attrs.dof_blur_near_enabled = false
+	_camera.attributes = _cam_attrs
 	_camera.current = true; add_child(_camera)
+	# RELEASE_VIEW_ORBIT lets a headless capture frame from the live orbit camera
+	# (so the interactive launch framing can be QA'd), instead of the fixed UE cam.
+	if OS.has_environment("RELEASE_CAPTURE") and not OS.has_environment("RELEASE_VIEW_ORBIT"):
+		# Headless capture: use the fixed UE-matched camera
+		_camera.fov = _envf("RELEASE_FOV", 16.0)
+		_camera.position = _ue_pos(160.0, -42.0, 158.0)
+		var fwd := _ue_forward(-4.0, 165.0)
+		_camera.look_at_from_position(_camera.position, _camera.position + fwd, Vector3.UP)
+		_camera.h_offset = _envf("CAP_H", p.get("cap_pan", 0.0))
+	else:
+		# QA overrides for dialing in the default framing (no rebuild needed).
+		_orbit_yaw   = _envf("ORB_YAW", _orbit_yaw)
+		_orbit_pitch = _envf("ORB_PITCH", _orbit_pitch)
+		_orbit_dist  = _envf("ORB_DIST", _orbit_dist)
+		_orbit_fov   = _envf("ORB_FOV", _orbit_fov)
+		_orbit_target.y = _envf("ORB_TY", _orbit_target.y)
+		_camera.fov = _orbit_fov
+		_update_orbit_camera()
+
+func _update_orbit_camera() -> void:
+	if _camera == null: return
+	if OS.has_environment("RELEASE_CAPTURE") and not OS.has_environment("RELEASE_VIEW_ORBIT"): return
+	var yaw_rad   := deg_to_rad(_orbit_yaw)
+	var pitch_rad := deg_to_rad(_orbit_pitch)
+	var offset := Vector3(
+		sin(yaw_rad) * cos(pitch_rad),
+		sin(pitch_rad),
+		cos(yaw_rad) * cos(pitch_rad)
+	) * _orbit_dist
+	_camera.position = _orbit_target + offset
+	_camera.look_at(_orbit_target, Vector3.UP)
+	_camera.fov = _orbit_fov
+
+func _process(delta: float) -> void:
+	# Turntable spins the MODEL (composes with hero cam + orbit).
+	if _turntable and _character and not OS.has_environment("RELEASE_CAPTURE"):
+		_character.rotation.y += deg_to_rad(TURNTABLE_SPEED) * delta
+		p["model_yaw"] = rad_to_deg(_character.rotation.y)
+
+	# Camera: hero push-in (ping-pong) OR user-driven orbit.
+	if _hero_cam and not OS.has_environment("RELEASE_CAPTURE"):
+		_hero_elapsed += delta
+		_update_hero_camera()
+	else:
+		_update_orbit_camera()
+
+func _update_hero_camera() -> void:
+	# Ping-pong dolly from a wide full-body shot to a tight face, ALONG the current
+	# orbit azimuth so it always frames the front (independent of the model's yaw).
+	if _camera == null: return
+	var phase: float = fmod(_hero_elapsed, 2.0 * HERO_DURATION) / HERO_DURATION
+	var pp: float = phase if phase <= 1.0 else (2.0 - phase)
+	pp = smoothstep(0.0, 1.0, pp)
+	var yaw_rad := deg_to_rad(_orbit_yaw)
+	var dir := Vector3(sin(yaw_rad), 0.0, cos(yaw_rad))   # horizontal view direction
+	var close_aim: Vector3 = _head_world if _anim_playing else Vector3(0.0, 1.62, 0.05)
+	var aim: Vector3 = HERO_WIDE_AIM.lerp(close_aim + Vector3(0.0, 0.05, 0.0), pp)
+	var dist: float = lerpf(4.3, 0.8, pp)
+	var elev: float = lerpf(0.22, 0.08, pp)
+	_camera.position = aim + dir * dist + Vector3(0.0, elev, 0.0)
+	_camera.fov = lerpf(HERO_WIDE_FOV, HERO_CLOSE_FOV, pp)
+	_camera.look_at(aim, Vector3.UP)
+
+# ---- animation (face emote + body idle) -------------------------------------
+func _set_hero_cam(on: bool) -> void:
+	_hero_cam = on
+	if on:
+		_hero_elapsed = 0.0
+		if _camera: _camera.h_offset = 0.0   # the hero move centers the subject itself
+	else:
+		if _camera: _camera.fov = _orbit_fov
+		_update_orbit_camera()
+
+func _set_anim_playing(on: bool) -> void:
+	# Plays the FACE emote (blend-shape performance: smile→surprise→blink→frown) on
+	# a static body. Body-idle + cross-armature head-follow is deliberately NOT used
+	# here: it only exists on the guy and its bind math assumes an un-transformed
+	# character node (true in look_dev, false here — we scale/rotate/place the node),
+	# which detaches the head. The turntable provides body motion; this drives the face.
+	_anim_playing = on
+	if on:
+		if _face_anim_player:
+			_face_anim_player.play("emote")
+	else:
+		if _face_anim_player: _face_anim_player.stop()
+		# restore the user's manual ARKit pose (the anim overwrote the shapes)
+		_zero_all_blendshapes()
+		_reapply_blendshapes()
+
+func _zero_all_blendshapes() -> void:
+	for sname in _bs_map.keys():
+		for pair in _bs_map[sname]:
+			pair[0].set_blend_shape_value(pair[1], 0.0)
+
+func _find_body_anim_player(root: Node) -> void:
+	var stack: Array[Node] = [root]
+	while stack.size() > 0:
+		var n: Node = stack.pop_back()
+		if n is AnimationPlayer and (n as AnimationPlayer).get_animation_list().size() > 0:
+			_body_anim_player = n
+			# stop any auto-play so the bind pose is stable until the toggle
+			(n as AnimationPlayer).stop()
+			return
+		for c in n.get_children(): stack.append(c)
+
+func _has_ancestor_named(node: Node, target: String) -> bool:
+	var par: Node = node.get_parent()
+	while par != null:
+		if String(par.name).begins_with(target): return true
+		par = par.get_parent()
+	return false
+
+func _resolve_body_skeleton(root: Node) -> void:
+	# The MetaHuman FACE skeleton also has spine_03/head bones; pick the real BODY
+	# skeleton by non-FaceArmature ancestry, then fewest bones.
+	var candidates: Array[Skeleton3D] = []
+	var stack: Array[Node] = [root]
+	while stack.size() > 0:
+		var n: Node = stack.pop_back()
+		if n is Skeleton3D:
+			var s: Skeleton3D = n
+			if s.find_bone("spine_03") >= 0 and s.find_bone("head") >= 0:
+				candidates.append(s)
+		for c in n.get_children(): stack.append(c)
+	if candidates.is_empty(): return
+	var best: Skeleton3D = candidates[0]
+	for s in candidates:
+		var uf: bool = _has_ancestor_named(s, "FaceArmature")
+		var bf: bool = _has_ancestor_named(best, "FaceArmature")
+		if (bf and not uf) or (uf == bf and s.get_bone_count() < best.get_bone_count()):
+			best = s
+	_body_skeleton = best
+
+func _bind_face_to_head_bone(root: Node) -> void:
+	if _body_skeleton == null: return
+	_head_bone_idx = _body_skeleton.find_bone("head")
+	if _head_bone_idx < 0: return
+	var stack: Array[Node] = [root]
+	while stack.size() > 0:
+		var n: Node = stack.pop_back()
+		if n is Node3D and String(n.name).begins_with("FaceArmature"):
+			_face_armature = n
+			break
+		for c in n.get_children(): stack.append(c)
+	if _face_armature == null: return
+	var head_rest: Transform3D = _body_skeleton.get_bone_global_rest(_head_bone_idx)
+	_face_arm_rest_origin = _face_armature.global_transform.origin
+	_face_arm_rest_basis = _face_armature.global_transform.basis
+	_face_arm_rest_local = _face_armature.transform
+	var sb: Basis = _body_skeleton.global_transform.basis
+	_skel_basis_norm = sb.orthonormalized()
+	_skel_scale_factor = sb.x.length()
+	_skel_bind_origin = _body_skeleton.global_transform.origin
+	_head_world_bind_origin = _skel_bind_origin + _skel_basis_norm * (head_rest.origin * _skel_scale_factor)
+	_head_world_bind_basis = (_skel_basis_norm * head_rest.basis).orthonormalized()
+
+func _find_face_mesh(root: Node) -> MeshInstance3D:
+	var stack: Array[Node] = [root]
+	var best: MeshInstance3D = null
+	var best_count := 0
+	while stack.size() > 0:
+		var n: Node = stack.pop_back()
+		if n is MeshInstance3D and (n as MeshInstance3D).mesh:
+			var c: int = (n as MeshInstance3D).mesh.get_blend_shape_count()
+			if c > best_count: best = n; best_count = c
+		for child in n.get_children(): stack.append(child)
+	return best
+
+func _build_face_animation(root: Node) -> void:
+	if _find_face_mesh(root) == null: return
+	var driven: Array[MeshInstance3D] = []
+	var stack: Array[Node] = [root]
+	while stack.size() > 0:
+		var n: Node = stack.pop_back()
+		if n is MeshInstance3D and (n as MeshInstance3D).mesh and (n as MeshInstance3D).mesh.get_blend_shape_count() > 0:
+			driven.append(n)
+		for c in n.get_children(): stack.append(c)
+	var anim := Animation.new()
+	anim.length = ANIM_DURATION
+	anim.loop_mode = Animation.LOOP_LINEAR
+	var touched := {}
+	for entry in KEY_TIMES:
+		for sh in KEYPOSES[entry[1]].keys(): touched[sh] = true
+	for sh in touched.keys():
+		for mim in driven:
+			var mesh: ArrayMesh = mim.mesh as ArrayMesh
+			if mesh == null: continue
+			var found := false
+			for si in range(mesh.get_blend_shape_count()):
+				if mesh.get_blend_shape_name(si) == sh: found = true; break
+			if not found: continue
+			var t: int = anim.add_track(Animation.TYPE_VALUE)
+			anim.track_set_path(t, NodePath("%s:blend_shapes/%s" % [mim.get_path(), sh]))
+			anim.track_set_interpolation_type(t, Animation.INTERPOLATION_LINEAR)
+			for entry in KEY_TIMES:
+				anim.track_insert_key(t, entry[0], KEYPOSES[entry[1]].get(sh, 0.0))
+	var lib := AnimationLibrary.new()
+	lib.add_animation("emote", anim)
+	_face_anim_player = AnimationPlayer.new()
+	_face_anim_player.name = "FaceAnimRelease"
+	add_child(_face_anim_player)
+	_face_anim_player.add_animation_library("", lib)
 
 # ---- textures ---------------------------------------------------------------
 func _rtex(filename: String, mip := true) -> Texture2D:
 	if filename == "" or filename == null: return null
-	var pa := ProjectSettings.globalize_path("res://" + filename)
+	# Try the resource system first — works from a packed PCK build.
+	var res_path := "res://" + filename
+	if ResourceLoader.exists(res_path):
+		var t := load(res_path) as Texture2D
+		if t != null: return t
+	# Fallback: raw filesystem load (custom GLB textures, dev builds, side-loaded files)
+	var pa := ProjectSettings.globalize_path(res_path)
 	if not FileAccess.file_exists(pa): return null
 	var img := Image.load_from_file(pa)
 	if img == null: return null
@@ -346,6 +667,12 @@ func _clear_character() -> void:
 	_skin_mats.clear(); _hair_mats.clear(); _hair_back_mats.clear()
 	_eye_mats.clear(); _hair_meshes.clear()
 	_bs_map.clear()
+	# tear down per-character animation state
+	if _face_anim_player and is_instance_valid(_face_anim_player):
+		_face_anim_player.queue_free()
+	_face_anim_player = null; _body_anim_player = null
+	_body_skeleton = null; _face_armature = null; _head_bone_idx = -1
+	_anim_playing = false
 
 func _load_character(custom_path := "") -> void:
 	_clear_character()
@@ -353,7 +680,14 @@ func _load_character(custom_path := "") -> void:
 	if abs_path == "":
 		abs_path = ProjectSettings.globalize_path(_profile["glb"])
 	var node: Node3D = null
-	if FileAccess.file_exists(abs_path):
+	# In a packed PCK build, GLBs are imported as .scn scenes — load via resource system.
+	if custom_path == "":
+		var res_path: String = _profile["glb"]
+		if ResourceLoader.exists(res_path):
+			var ps: PackedScene = load(res_path) as PackedScene
+			if ps != null: node = ps.instantiate() as Node3D
+	# Fallback: raw filesystem GLB load (dev builds, custom GLBs from file dialog)
+	if node == null and FileAccess.file_exists(abs_path):
 		var doc := GLTFDocument.new(); var st := GLTFState.new()
 		if doc.append_from_file(abs_path, st) == OK:
 			node = doc.generate_scene(st)
@@ -385,6 +719,11 @@ func _load_character(custom_path := "") -> void:
 	else:
 		_wire_custom(node)
 	_collect_blendshapes(node)
+	# Face emote animation (blend-shape performance). Built but NOT played; the
+	# "Play animation" toggle drives it.
+	var aabb3 := _world_aabb(node)
+	_head_world = Vector3(0.0, aabb3.position.y + aabb3.size.y - 0.12, 0.05)
+	_build_face_animation(node)
 
 func _switch_character() -> void:
 	var i := CHAR_ORDER.find(_char_key)
@@ -392,12 +731,25 @@ func _switch_character() -> void:
 	_profile = PROFILES[_char_key]
 	_load_preset_file("%s/%s.json" % [PRESET_DIR, _profile.get("default_preset", "")])
 	_load_character()
+	_reapply_blendshapes()   # carry the current ARKit pose across the character swap
+	_apply_overlay_image()   # show THIS character's UE reference (or none)
 	_rebuild_bs_panel()
 	_refresh_preset_list()
 	_refresh_controls()
 	_apply_all()
 	if _char_btn: _char_btn.text = "Character: " + _profile["label"]
 	_set_status("Loaded " + _profile["label"])
+
+# Re-drive every stored ARKit value onto the freshly-loaded character's meshes.
+# _bs_values persists across _switch_character / _load_character (only _bs_map is
+# rebuilt), so a jawOpen=0.6 set on "her" stays applied after toggling to "guy".
+func _reapply_blendshapes() -> void:
+	for sname in _bs_values.keys():
+		if not _bs_map.has(sname): continue
+		var v: float = _bs_values[sname]
+		if v == 0.0: continue
+		for pair in _bs_map[sname]:
+			pair[0].set_blend_shape_value(pair[1], v)
 
 # ---- material wiring (profile-driven) ---------------------------------------
 func _wire_materials(root: Node) -> void:
@@ -432,7 +784,7 @@ func _wire_materials(root: Node) -> void:
 		# --- outfit -> light cloth ---
 		if String(mi.name).begins_with("Outfit"):
 			var cloth := StandardMaterial3D.new()
-			cloth.albedo_color = Color(0.80, 0.81, 0.84)
+			cloth.albedo_color = _profile.get("outfit_color", Color(0.80, 0.81, 0.84))
 			cloth.roughness = 0.85; cloth.metallic = 0.0
 			for s in range(mesh.get_surface_count()):
 				mi.set_surface_override_material(s, cloth)
@@ -446,6 +798,11 @@ func _wire_face_by_index(mi: MeshInstance3D, skin, teeth, eye_r, eye_l, hide) ->
 			mi.set_surface_override_material(s, role_mat[role])
 
 func _wire_face_by_name(mi: MeshInstance3D, skin, eye_l, eye_r, hide) -> void:
+	# Generic name-based fallback for face meshes whose material names DO reflect
+	# their geometry. NOTE: stock MetaHuman face meshes do NOT — their main skin
+	# geometry sits on a surface mislabeled "..Teeth_Baked..", so prefer
+	# face_mode "index" (see PROFILES) for any real MetaHuman export. Both shipped
+	# characters use the index map; this path is kept for arbitrary custom faces.
 	for s in range(mi.mesh.get_surface_count()):
 		var m: Material = mi.mesh.surface_get_material(s)
 		var nm := (m.resource_name if m else "").to_lower()
@@ -654,17 +1011,31 @@ func _find_meshes(n: Node) -> Array:
 	for c in n.get_children(): out.append_array(_find_meshes(c))
 	return out
 
+# Set the UE-reference overlay to the CURRENT character's image (her has one,
+# the guy doesn't). Prevents showing her reference over him after a toggle.
+func _apply_overlay_image() -> void:
+	if _overlay == null: return
+	var img_name: String = _profile.get("overlay_img", "")
+	_overlay_available = img_name != ""
+	if _overlay_available:
+		_overlay.texture = _rtex(img_name, false)
+	else:
+		_overlay.texture = null
+		p.overlay = 0.0
+	_overlay.modulate = Color(1, 1, 1, p.overlay)
+
 # ---- UI ---------------------------------------------------------------------
 func _setup_ui() -> void:
 	var layer := CanvasLayer.new(); add_child(layer)
 	_overlay = TextureRect.new()
-	_overlay.texture = _rtex("exp_ue_ref0.png", false)
 	_overlay.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	_overlay.stretch_mode = TextureRect.STRETCH_SCALE
+	# Keep the UE reference at its native aspect (no horizontal stretch).
+	_overlay.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_overlay.modulate = Color(1, 1, 1, p.overlay)
 	layer.add_child(_overlay)
+	_apply_overlay_image()
 
 	# file dialog (custom GLB)
 	_file_dialog = FileDialog.new()
@@ -675,15 +1046,19 @@ func _setup_ui() -> void:
 	_file_dialog.file_selected.connect(func(pth): _load_character(pth); _rebuild_bs_panel(); _refresh_controls(); _apply_all())
 	layer.add_child(_file_dialog)
 
-	# main look-dev panel
+	# main look-dev panel — full-height left column, drag-resizable + collapsible
 	_panel = PanelContainer.new()
-	_panel.position = Vector2(10, 10)
-	_panel.custom_minimum_size = Vector2(340, 0)
+	_panel.anchor_top = 0.0; _panel.anchor_bottom = 1.0
+	_panel.offset_left = 0.0; _panel.offset_top = 0.0
+	_panel.offset_right = _panel_width; _panel.offset_bottom = 0.0
 	layer.add_child(_panel)
 	var scroll := ScrollContainer.new()
-	scroll.custom_minimum_size = Vector2(340, 820)
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	_panel.add_child(scroll)
-	var vb := VBoxContainer.new(); vb.custom_minimum_size = Vector2(320, 0); scroll.add_child(vb)
+	var vb := VBoxContainer.new()
+	vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(vb)
+	_build_left_handle(layer)
 
 	var title := Label.new()
 	title.text = "MetaHuman → Godot — RELEASE look-dev\nC char · B shapes · H panel · O overlay · P save"
@@ -698,9 +1073,25 @@ func _setup_ui() -> void:
 	_status = Label.new(); _status.add_theme_color_override("font_color", Color(0.6, 0.9, 0.6))
 	vb.add_child(_status)
 
+	_section(vb, "CAMERA  [R] = reset  LMB=orbit  RMB=pan  wheel=zoom")
+	_orbit_slider(vb, "Orbit yaw",    func(v): _orbit_yaw = v,                           func(): return _orbit_yaw,   -180.0, 180.0, 0.5)
+	_orbit_slider(vb, "Orbit pitch",  func(v): _orbit_pitch = clampf(v, -89.0, 89.0),    func(): return _orbit_pitch,  -89.0,  89.0, 0.5)
+	_orbit_slider(vb, "Orbit dist",   func(v): _orbit_dist = v,                           func(): return _orbit_dist,    0.1,   6.0, 0.02)
+	_orbit_slider(vb, "FOV",          func(v): _orbit_fov = v; if _camera: _camera.fov=v, func(): return _orbit_fov,    10.0,  90.0, 1.0)
+	_slider(vb, "dof_focus", "DOF focus (m)", 0.1, 8.0, 0.05)
+	_slider(vb, "dof_blur",  "DOF blur",      0.0, 0.5, 0.005)
+	var tt_cb := CheckBox.new(); tt_cb.text = "Turntable (rotate character)"
+	tt_cb.toggled.connect(func(on): _turntable = on)
+	vb.add_child(tt_cb)
+	var hero_cb := CheckBox.new(); hero_cb.text = "Hero camera (ping-pong push-in)"
+	hero_cb.toggled.connect(func(on): _set_hero_cam(on))
+	vb.add_child(hero_cb)
+	var anim_cb := CheckBox.new(); anim_cb.text = "Play face animation (emote)"
+	anim_cb.toggled.connect(func(on): _set_anim_playing(on))
+	vb.add_child(anim_cb)
+
 	_section(vb, "SCENE")
 	_slider(vb, "model_yaw", "Model yaw", 0.0, 360.0, 0.5)
-	_slider(vb, "view_pan", "View pan (look-dev only)", -4.0, 4.0, 0.05)
 	_slider(vb, "overlay", "UE overlay opacity", 0.0, 1.0, 0.01)
 	_slider(vb, "zoff", "Depth nudge (m)", -0.5, 0.5, 0.005)
 
@@ -727,6 +1118,7 @@ func _setup_ui() -> void:
 	_color(vb, "rim_col", "Rim colour")
 	_color(vb, "amb_col", "Ambient colour")
 	_color(vb, "catch_col", "Catchlight colour")
+	_color(vb, "bg_col", "Background colour")
 
 	_section(vb, "SKIN (face + body)")
 	_slider(vb, "sss", "Subsurface", 0.0, 1.0, 0.01)
@@ -824,23 +1216,46 @@ func _toggle(parent: Control, key: String, label: String) -> void:
 func _refresh_controls() -> void:
 	for r in _refreshers: r.call()
 
+# Orbit-camera live slider (getter/setter callables, not keyed to p dict)
+func _orbit_slider(parent: Control, label: String, setter: Callable, getter: Callable,
+		lo: float, hi: float, step: float) -> void:
+	var row := VBoxContainer.new()
+	var top := HBoxContainer.new()
+	var lab := Label.new(); lab.text = label; lab.custom_minimum_size = Vector2(175, 0)
+	top.add_child(lab)
+	var spin := SpinBox.new()
+	spin.min_value = lo; spin.max_value = hi; spin.step = step
+	spin.allow_greater = true; spin.allow_lesser = true
+	spin.custom_minimum_size = Vector2(120, 0); spin.value = getter.call()
+	top.add_child(spin); row.add_child(top)
+	var sl := HSlider.new()
+	sl.min_value = lo; sl.max_value = hi; sl.step = step
+	sl.value = clampf(getter.call(), lo, hi)
+	sl.custom_minimum_size = Vector2(300, 16); row.add_child(sl); parent.add_child(row)
+	sl.value_changed.connect(func(v): setter.call(v); spin.set_value_no_signal(v))
+	spin.value_changed.connect(func(v): setter.call(v); sl.set_value_no_signal(clampf(v, lo, hi)))
+	_refreshers.append(func(): var v = getter.call(); spin.set_value_no_signal(v); sl.set_value_no_signal(clampf(v, lo, hi)))
+
 # ---- ARKit blendshape panel -------------------------------------------------
 func _build_bs_panel(layer: CanvasLayer) -> void:
+	# Full-height RIGHT column, drag-resizable + collapsible (mirror of left panel).
 	_bs_panel = PanelContainer.new()
-	_bs_panel.set_anchors_preset(Control.PRESET_TOP_RIGHT)
-	_bs_panel.position = Vector2(-370, 10)
-	_bs_panel.custom_minimum_size = Vector2(360, 0)
+	_bs_panel.anchor_left = 1.0; _bs_panel.anchor_right = 1.0
+	_bs_panel.anchor_top = 0.0; _bs_panel.anchor_bottom = 1.0
+	_bs_panel.offset_left = -_bs_width; _bs_panel.offset_right = 0.0
 	_bs_panel.visible = false
 	layer.add_child(_bs_panel)
+	_build_bs_handle(layer)
 	_rebuild_bs_panel()
 
 func _rebuild_bs_panel() -> void:
 	if _bs_panel == null: return
 	for c in _bs_panel.get_children(): c.queue_free()
 	_bs_rows.clear()
-	var scroll := ScrollContainer.new(); scroll.custom_minimum_size = Vector2(360, 880)
+	var scroll := ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	_bs_panel.add_child(scroll)
-	var vb := VBoxContainer.new(); vb.custom_minimum_size = Vector2(340, 0); scroll.add_child(vb)
+	var vb := VBoxContainer.new(); vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL; scroll.add_child(vb)
 	var present := 0
 	for nm in ARKIT_NAMES:
 		if _bs_map.has(nm): present += 1
@@ -886,7 +1301,93 @@ func _reset_all_shapes() -> void:
 		_bs_rows[nm]["spin"].set_value_no_signal(0.0)
 
 func _toggle_bs_panel() -> void:
-	if _bs_panel: _bs_panel.visible = not _bs_panel.visible
+	if _bs_panel == null: return
+	var vis := not _bs_panel.visible
+	_bs_panel.visible = vis
+	if _bs_handle: _bs_handle.visible = vis
+	if _bs_collapse_btn: _bs_collapse_btn.visible = vis
+
+# ---- resizable / collapsible panel chrome -----------------------------------
+func _build_left_handle(layer: CanvasLayer) -> void:
+	var h := Panel.new(); h.name = "LeftHandle"
+	h.anchor_top = 0.0; h.anchor_bottom = 1.0
+	h.offset_left = _panel_width; h.offset_right = _panel_width + 12.0
+	h.mouse_default_cursor_shape = Control.CURSOR_HSIZE
+	var sb := StyleBoxFlat.new(); sb.bg_color = Color(0.20, 0.22, 0.28, 0.9)
+	h.add_theme_stylebox_override("panel", sb)
+	var grip := Label.new(); grip.text = "⋮"; grip.set_anchors_preset(Control.PRESET_CENTER)
+	grip.add_theme_color_override("font_color", Color(0.75, 0.75, 0.8)); h.add_child(grip)
+	h.gui_input.connect(func(ev):
+		if ev is InputEventMouseButton and (ev as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT:
+			_panel_dragging = (ev as InputEventMouseButton).pressed)
+	layer.add_child(h); _panel_handle = h
+	var cb := Button.new(); cb.name = "LeftCollapse"; cb.text = "‹‹"
+	cb.tooltip_text = "Collapse / expand the settings panel"
+	cb.offset_left = _panel_width + 16.0; cb.offset_top = 12.0
+	cb.offset_right = _panel_width + 50.0; cb.offset_bottom = 40.0
+	cb.pressed.connect(_toggle_left_collapse)
+	layer.add_child(cb); _panel_collapse_btn = cb
+
+func _set_left_width(w: float) -> void:
+	_panel_width = clampf(w, 0.0, 760.0)
+	if _panel: _panel.offset_right = _panel_width
+	if _panel_handle:
+		_panel_handle.offset_left = _panel_width; _panel_handle.offset_right = _panel_width + 12.0
+	if _panel_collapse_btn:
+		_panel_collapse_btn.offset_left = _panel_width + 16.0; _panel_collapse_btn.offset_right = _panel_width + 50.0
+
+func _toggle_left_collapse() -> void:
+	if _panel_width > 40.0:
+		_panel_prev_width = _panel_width; _set_left_width(0.0)
+		if _panel_collapse_btn: _panel_collapse_btn.text = "››"
+	else:
+		_set_left_width(_panel_prev_width if _panel_prev_width > 40.0 else 360.0)
+		if _panel_collapse_btn: _panel_collapse_btn.text = "‹‹"
+
+func _build_bs_handle(layer: CanvasLayer) -> void:
+	var h := Panel.new(); h.name = "BsHandle"
+	h.anchor_left = 1.0; h.anchor_right = 1.0; h.anchor_top = 0.0; h.anchor_bottom = 1.0
+	h.offset_left = -_bs_width - 12.0; h.offset_right = -_bs_width
+	h.mouse_default_cursor_shape = Control.CURSOR_HSIZE
+	var sb := StyleBoxFlat.new(); sb.bg_color = Color(0.20, 0.22, 0.28, 0.9)
+	h.add_theme_stylebox_override("panel", sb)
+	var grip := Label.new(); grip.text = "⋮"; grip.set_anchors_preset(Control.PRESET_CENTER)
+	grip.add_theme_color_override("font_color", Color(0.75, 0.75, 0.8)); h.add_child(grip)
+	h.gui_input.connect(func(ev):
+		if ev is InputEventMouseButton and (ev as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT:
+			_bs_dragging = (ev as InputEventMouseButton).pressed)
+	h.visible = false
+	layer.add_child(h); _bs_handle = h
+	var cb := Button.new(); cb.name = "BsCollapse"; cb.text = "››"
+	cb.tooltip_text = "Collapse / expand the ARKit panel"
+	cb.anchor_left = 1.0; cb.anchor_right = 1.0
+	cb.offset_left = -_bs_width - 50.0; cb.offset_top = 12.0
+	cb.offset_right = -_bs_width - 16.0; cb.offset_bottom = 40.0
+	cb.pressed.connect(_toggle_bs_collapse)
+	cb.visible = false
+	layer.add_child(cb); _bs_collapse_btn = cb
+
+func _set_bs_width(w: float) -> void:
+	_bs_width = clampf(w, 0.0, 760.0)
+	if _bs_panel: _bs_panel.offset_left = -_bs_width
+	if _bs_handle:
+		_bs_handle.offset_left = -_bs_width - 12.0; _bs_handle.offset_right = -_bs_width
+	if _bs_collapse_btn:
+		_bs_collapse_btn.offset_left = -_bs_width - 50.0; _bs_collapse_btn.offset_right = -_bs_width - 16.0
+
+func _toggle_bs_collapse() -> void:
+	if _bs_width > 40.0:
+		_bs_prev_width = _bs_width; _set_bs_width(0.0)
+		if _bs_collapse_btn: _bs_collapse_btn.text = "‹‹"
+	else:
+		_set_bs_width(_bs_prev_width if _bs_prev_width > 40.0 else 380.0)
+		if _bs_collapse_btn: _bs_collapse_btn.text = "››"
+
+# Hide all UI chrome (panels, handles, buttons, overlay) for clean captures.
+func _hide_chrome() -> void:
+	for n in [_panel, _panel_handle, _panel_collapse_btn, _bs_panel, _bs_handle, _bs_collapse_btn]:
+		if n: (n as CanvasItem).visible = false
+	if _overlay: _overlay.modulate.a = 0.0
 
 # ---- apply ------------------------------------------------------------------
 func _apply_all() -> void:
@@ -897,6 +1398,7 @@ func _apply_all() -> void:
 		_env.adjustment_saturation = p.saturation
 		_env.adjustment_brightness = p.brightness
 		_env.adjustment_contrast = p.contrast
+	_apply_backdrop_color()
 	var col_map := {"key": "key_col", "keyrect": "keyrect_col", "fill": "fill_col", "rim": "rim_col", "ambient": "amb_col"}
 	for k in col_map.keys():
 		if _lights.has(k):
@@ -936,7 +1438,18 @@ func _apply_all() -> void:
 		m.set_shader_parameter("clearcoat_val", p.eye_clearcoat)
 	if _character: _character.rotation.y = deg_to_rad(p.model_yaw)
 	if _overlay: _overlay.modulate = Color(1, 1, 1, p.overlay)
-	if _camera and not OS.has_environment("RELEASE_CAPTURE"): _camera.h_offset = p.view_pan
+	if _cam_attrs and not OS.has_environment("RELEASE_CAPTURE"):
+		var blur: float = float(p.get("dof_blur", 0.0))
+		var enabled: bool = blur > 0.001
+		_cam_attrs.dof_blur_near_enabled = enabled
+		_cam_attrs.dof_blur_far_enabled  = enabled
+		if enabled:
+			var focus: float = float(p.get("dof_focus", 1.3))
+			_cam_attrs.dof_blur_near_distance   = focus * 0.6
+			_cam_attrs.dof_blur_near_transition  = focus * 0.4
+			_cam_attrs.dof_blur_far_distance    = focus * 1.3
+			_cam_attrs.dof_blur_far_transition  = focus * 0.8
+			_cam_attrs.dof_blur_amount          = blur
 
 # ---- presets (per character) ------------------------------------------------
 func _set_status(s: String) -> void:
@@ -973,12 +1486,19 @@ func _save_preset_as() -> void:
 	_refresh_preset_list()
 
 func _load_preset_file(path: String) -> void:
-	# accepts a res:// path or absolute; resolves res:// to disk for runtime read
-	var disk := path
-	if path.begins_with("res://"):
-		disk = ProjectSettings.globalize_path(path)
-	if not FileAccess.file_exists(disk): return
-	var txt := FileAccess.get_file_as_string(disk)
+	# Accepts a res:// path (shipped presets — read straight from the PCK / editor
+	# VFS via FileAccess) or an absolute disk path (user-saved presets). Only fall
+	# back to a globalized on-disk copy if the res:// resource is missing — e.g. a
+	# side-loaded override dropped next to the exe. (The previous version ALWAYS
+	# globalized res://, which resolves to a non-existent <exe_dir>/presets/* in a
+	# clean PCK build, so the shipped studio look silently never loaded.)
+	var rp := path
+	if not FileAccess.file_exists(rp):
+		if path.begins_with("res://"):
+			rp = ProjectSettings.globalize_path(path)
+		if not FileAccess.file_exists(rp):
+			return
+	var txt := FileAccess.get_file_as_string(rp)
 	var data = JSON.parse_string(txt)
 	if typeof(data) != TYPE_DICTIONARY: return
 	for k in data.keys():
@@ -987,7 +1507,7 @@ func _load_preset_file(path: String) -> void:
 			p[k] = Color(data[k][0], data[k][1], data[k][2])
 		else:
 			p[k] = data[k]
-	_set_status("loaded <- " + disk.get_file())
+	_set_status("loaded <- " + rp.get_file())
 
 func _load_selected_preset() -> void:
 	if _preset_dd == null or _preset_dd.item_count == 0: return
@@ -998,7 +1518,11 @@ func _load_selected_preset() -> void:
 func _refresh_preset_list() -> void:
 	if _preset_dd == null: return
 	_preset_dd.clear()
-	var d := DirAccess.open(ProjectSettings.globalize_path(PRESET_DIR))
+	# List from res:// first (works in the editor AND a packed exe); fall back to a
+	# globalized on-disk presets dir (side-loaded user presets next to the exe).
+	var d := DirAccess.open(PRESET_DIR)
+	if d == null:
+		d = DirAccess.open(ProjectSettings.globalize_path(PRESET_DIR))
 	if d == null: return
 	# show only presets for the current character (prefix "<char>__")
 	for f in d.get_files():
@@ -1012,16 +1536,23 @@ func _screenshot() -> void:
 func _capture_still() -> void:
 	var pv := _panel.visible if _panel else false
 	var bv := _bs_panel.visible if _bs_panel else false
-	if _panel: _panel.visible = false
-	if _bs_panel: _bs_panel.visible = false
+	var ov: float = p.overlay
+	_hide_chrome()
 	await get_tree().create_timer(0.05).timeout
 	await RenderingServer.frame_post_draw
 	DirAccess.make_dir_recursive_absolute(OUT_DIR)
 	var img := get_viewport().get_texture().get_image()
 	var stamp := Time.get_datetime_string_from_system().replace(":", "-")
 	img.save_png("%s/release_%s_%s.png" % [OUT_DIR, _char_key, stamp])
+	# restore chrome
 	if _panel: _panel.visible = pv
+	if _panel_handle: _panel_handle.visible = true
+	if _panel_collapse_btn: _panel_collapse_btn.visible = true
 	if _bs_panel: _bs_panel.visible = bv
+	if _bs_handle: _bs_handle.visible = bv
+	if _bs_collapse_btn: _bs_collapse_btn.visible = bv
+	p.overlay = ov
+	if _overlay: _overlay.modulate.a = ov
 	_set_status("screenshot saved")
 
 func _start_movie() -> void:
@@ -1029,9 +1560,7 @@ func _start_movie() -> void:
 	DirAccess.make_dir_recursive_absolute(mdir)
 	_movie = true; _movie_frame = 0
 	_spin_start = _character.rotation.y if _character else 0.0
-	if _panel: _panel.visible = false
-	if _bs_panel: _bs_panel.visible = false
-	if _overlay: _overlay.modulate.a = 0.0
+	_hide_chrome()
 	if not RenderingServer.frame_post_draw.is_connected(_on_post_draw):
 		RenderingServer.frame_post_draw.connect(_on_post_draw)
 	_set_status("recording turntable…")
@@ -1064,12 +1593,59 @@ func _finish_movie() -> void:
 
 # ---- input ------------------------------------------------------------------
 func _input(e: InputEvent) -> void:
+	# Panel-resize drags use ABSOLUTE mouse X and capture the event so dragging the
+	# handle keeps resizing even when the cursor passes over the panel's own controls.
+	if _panel_dragging or _bs_dragging:
+		if e is InputEventMouseMotion:
+			var mx: float = (e as InputEventMouseMotion).position.x
+			if _panel_dragging: _set_left_width(mx + 6.0)
+			if _bs_dragging:
+				var sw: float = get_viewport().get_visible_rect().size.x
+				_set_bs_width(sw - mx + 6.0)
+			get_viewport().set_input_as_handled()
+		elif e is InputEventMouseButton and not (e as InputEventMouseButton).pressed \
+				and (e as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT:
+			_panel_dragging = false; _bs_dragging = false
+		return
 	if e is InputEventKey and e.pressed and not e.echo:
 		match e.keycode:
 			KEY_C: _switch_character()
 			KEY_B: _toggle_bs_panel()
-			KEY_H:
-				if _panel: _panel.visible = not _panel.visible
+			KEY_H: _toggle_left_collapse()
 			KEY_O:
-				p.overlay = 0.5 if p.overlay < 0.05 else 0.0; _apply_all()
+				if _overlay_available:
+					p.overlay = 0.5 if p.overlay < 0.05 else 0.0; _apply_all()
 			KEY_P: _save_default_preset()
+			KEY_R: _reset_orbit()
+# Camera orbit/pan/zoom lives in _unhandled_input so it ONLY fires for events the
+# UI didn't already consume. Dragging a slider / button / panel is eaten by that
+# Control first, so it no longer also spins the character — rotation happens only
+# when you drag on the empty viewport. (Panel-resize uses _input + set_input_as_handled.)
+func _unhandled_input(e: InputEvent) -> void:
+	if OS.has_environment("RELEASE_CAPTURE"): return
+	if _hero_cam: return   # hero move owns the camera; ignore drags while it plays
+	if e is InputEventMouseButton:
+		var mb := e as InputEventMouseButton
+		if mb.button_index == MOUSE_BUTTON_LEFT:
+			_drag_mode = 1 if mb.pressed else 0
+		elif mb.button_index == MOUSE_BUTTON_RIGHT or mb.button_index == MOUSE_BUTTON_MIDDLE:
+			_drag_mode = 2 if mb.pressed else 0
+		elif mb.pressed and mb.button_index == MOUSE_BUTTON_WHEEL_UP:
+			_orbit_dist = maxf(0.1, _orbit_dist - 0.08)
+		elif mb.pressed and mb.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+			_orbit_dist = minf(10.0, _orbit_dist + 0.08)
+	elif e is InputEventMouseMotion and _drag_mode > 0:
+		var rel := (e as InputEventMouseMotion).relative
+		if _drag_mode == 1:  # orbit
+			_orbit_yaw -= rel.x * 0.35
+			_orbit_pitch = clampf(_orbit_pitch + rel.y * 0.25, -89.0, 89.0)
+		elif _drag_mode == 2:  # pan
+			var right := _camera.global_transform.basis.x
+			var up    := _camera.global_transform.basis.y
+			_orbit_target -= right * rel.x * _orbit_dist * 0.002
+			_orbit_target += up    * rel.y * _orbit_dist * 0.002
+
+func _reset_orbit() -> void:
+	_orbit_yaw = DEFAULT_ORBIT_YAW; _orbit_pitch = DEFAULT_ORBIT_PITCH
+	_orbit_dist = DEFAULT_ORBIT_DIST; _orbit_target = DEFAULT_ORBIT_TARGET
+	_orbit_fov = 28.0; if _camera: _camera.fov = _orbit_fov

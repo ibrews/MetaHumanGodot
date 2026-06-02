@@ -1,0 +1,80 @@
+{
+  "key": 11.0,
+  "keyrect": 1.0,
+  "fill": 0.3,
+  "rim": 5.5,
+  "ambient": 0.2,
+  "env_amb": 0.06,
+  "exposure": 1.0,
+  "glow": 0.5,
+  "catch": 1.4,
+  "key_col": [
+    1.0,
+    0.96,
+    0.9
+  ],
+  "keyrect_col": [
+    1.0,
+    0.96,
+    0.9
+  ],
+  "fill_col": [
+    0.4,
+    0.45,
+    0.6
+  ],
+  "rim_col": [
+    0.8,
+    0.85,
+    1.0
+  ],
+  "amb_col": [
+    0.3,
+    0.32,
+    0.4
+  ],
+  "catch_col": [
+    1.0,
+    1.0,
+    1.0
+  ],
+  "sss": 0.25,
+  "scatter": 1.6,
+  "skin_smooth": 1.0,
+  "skin_nrm": 1.5,
+  "skin_rough": 0.62,
+  "skin_spec": 0.35,
+  "sss_depth": 6.0,
+  "micro": 0.0,
+  "double_spec": false,
+  "hair_col": [
+    0.2,
+    0.13,
+    0.075
+  ],
+  "hair_thresh": 0.07,
+  "hair_root": 0.42,
+  "hair_rough": 0.72,
+  "hair_spec": 0.12,
+  "hair_back_cut": 0.035,
+  "hair_back_inset": 0.009,
+  "sclera_tint": 0.45,
+  "iris_scale": 1.62,
+  "iris_radius": 0.185,
+  "eye_rough": 0.05,
+  "eye_spec": 0.8,
+  "eye_clearcoat": 0.3,
+  "saturation": 0.96,
+  "brightness": 0.98,
+  "contrast": 1.22,
+  "model_yaw": 272.5,
+  "overlay": 0.0,
+  "zoff": 0.0,
+  "view_pan": -1.2,
+  "cap_pan": -0.176,
+  "bg_col": [
+    0.02,
+    0.025,
+    0.035
+  ]
+}
