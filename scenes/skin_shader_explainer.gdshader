@@ -58,6 +58,10 @@ uniform float subsurface_scattering_strength : hint_range(0.0, 1.0, 0.01) = 0.4;
 uniform float skin_smoothness : hint_range(0.0, 10.0) = 5.0;
 uniform float skin_fallof_smoothness : hint_range(0.7, 2.0, 0.01) = 1.0;
 uniform bool tinted_shadow_penumbra = false;
+// Floor on the penumbra-tinted attenuation: how dark a CAST shadow (e.g. hair on the
+// forehead) is allowed to make the skin. 0.5 = shadows never darker than 50% (the old
+// hardcoded value, which hid hair shadows); lower = stronger/visible cast shadows.
+uniform float shadow_floor : hint_range(0.0, 1.0) = 0.3;
 uniform bool old_lightwarp_fallof = false;
 uniform sampler2D lightwarp : source_color, filter_linear, repeat_disable;
 uniform sampler2D texture_sss_noise : filter_linear, repeat_enable, source_color;
@@ -308,7 +312,7 @@ void light()
 	}
 
 	//Tint shadow penumbra:
-	vec3 att = overlay(min(vec3(ATTENUATION), 1.), vec3(1.2,.8,.6)) * max(ATTENUATION, 0.5);
+	vec3 att = overlay(min(vec3(ATTENUATION), 1.), vec3(1.2,.8,.6)) * max(ATTENUATION, shadow_floor);
 	if (tinted_shadow_penumbra){att = att;} else{att = vec3(ATTENUATION);}
 
 	DIFFUSE_LIGHT += diff_light * att * lightColor;

@@ -132,6 +132,8 @@ var p := {
 	"micro": 0.0,
 	"skin_tint": Color(1, 1, 1),   # multiplies the albedo — recolour skin (hue)
 	"skin_bright": 1.0,            # albedo brightness multiplier (>1 lightens past current)
+	"shadow_strength": 0.7,        # how dark cast shadows (e.g. hair on face) get; higher = stronger
+	"outfit_grow": 0.006,          # inflate the shirt along normals (m) so skin can't poke through
 	# hair
 	"hair_col": Color(0.20, 0.13, 0.075), "hair_thresh": 0.07,
 	"hair_root": 0.42, "hair_rough": 0.72, "hair_spec": 0.12,
@@ -230,10 +232,23 @@ const HERO_CLOSE_FOV := 24.0
 const HERO_WIDE_AIM := Vector3(0.0, 1.02, 0.0)
 var _head_world := Vector3(0.0, 1.62, 0.05)
 
-var _anim_playing := false
-var _follow_active := false      # face-follow runs only while the body idle plays
+var _face_anim_on := false       # face emote toggle (independent)
+var _body_anim_on := false       # body idle toggle (independent)
+var _follow_active := false      # face-follow runs while the body idle plays
 var _face_anim_player: AnimationPlayer
 var _body_anim_player: AnimationPlayer
+# leg idle (subtle weight-shift) + starting camera (for Reset) + outfit grow-shell
+var _pelvis_idx := -1
+var _calf_l_idx := -1
+var _calf_r_idx := -1
+var _leg_clock := 0.0
+var _start_orbit_yaw := -72.0
+var _start_orbit_pitch := 6.5
+var _start_orbit_dist := 1.5
+var _start_orbit_fov := 28.0
+var _start_orbit_target := Vector3(0.0, 1.33, 0.0)
+var _outfit_mats: Array = []
+var _face_off := Transform3D.IDENTITY   # face armature relative to head bone (world, at bind)
 
 # ---- eye gaze (item 3, redesigned): both eyes LOOK-AT a single focal point. The 8
 # ARKit eyeLook* shapes were stripped (horror-eye fix), so we aim the
@@ -308,6 +323,11 @@ func _ready() -> void:
 	if not OS.has_environment("RELEASE_CAPTURE"):
 		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
 	_rng.randomize()
+	# Bigger, full-precision positional shadow atlas → far less shadow shimmer/flicker
+	# (the spot-light shadows aliased badly at the 2048/16-bit default while animating).
+	var vp := get_viewport()
+	vp.positional_shadow_atlas_size = 4096
+	vp.positional_shadow_atlas_16_bits = false
 	_char_key = OS.get_environment("RELEASE_CHAR") if OS.has_environment("RELEASE_CHAR") else "guy"
 	if not PROFILES.has(_char_key):
 		_char_key = "guy"
@@ -345,7 +365,7 @@ func _ready() -> void:
 	_apply_all()
 	# Headless QA hooks for the toggles. RELEASE_ANIM_SEEK sets the face-anim time.
 	if OS.has_environment("RELEASE_ANIM"):
-		_set_anim_playing(true)
+		_set_face_anim(true); _set_body_anim(true)
 		if OS.has_environment("RELEASE_ANIM_SEEK"):
 			if _face_anim_player: _face_anim_player.seek(_envf("RELEASE_ANIM_SEEK", 0.0), true)
 			if _body_anim_player: _body_anim_player.seek(_envf("RELEASE_ANIM_SEEK", 0.0), true)
@@ -457,6 +477,11 @@ func _spot(nm: String, ue_loc: Array, pitch: float, yaw: float, col: Color,
 	s.spot_angle_attenuation = clampf(inner_deg / maxf(outer_deg, 1.0), 0.1, 1.0)
 	s.spot_range = 20.0; s.spot_attenuation = 0.6
 	s.shadow_enabled = shadow; s.light_specular = 0.4
+	if shadow:
+		# Tame shadow acne/shimmer (the source of the flicker) + soften the edge a touch.
+		s.shadow_bias = 0.04
+		s.shadow_normal_bias = 2.0
+		s.shadow_blur = 1.3
 	add_child(s); return s
 
 func _setup_lights() -> void:
@@ -526,23 +551,24 @@ func _process(delta: float) -> void:
 	# Turntable spins the MODEL (composes with hero cam + orbit). Gated off while the
 	# body idle plays — the bind-basis face-follow assumes a fixed node yaw, so a live
 	# turntable would detach the head. The idle itself supplies body motion.
-	if _turntable and not _anim_playing and _character and not OS.has_environment("RELEASE_CAPTURE"):
+	# Turntable spins the MODEL. It now COEXISTS with body/face anim + hero cam: the
+	# face-follow below uses the CURRENT skeleton world transform, so a rotating node is
+	# handled (no more gating it off during animation).
+	if _turntable and _character and not OS.has_environment("RELEASE_CAPTURE"):
 		_character.rotation.y += deg_to_rad(TURNTABLE_SPEED) * delta
 		p["model_yaw"] = rad_to_deg(_character.rotation.y)
 
-	# Runtime face-follow: glue the separate FaceArmature to the body's animated 'head'
-	# bone while the idle plays (two separate skeletons — body 341 / face 874 — so the
-	# head detaches otherwise). Drift-free reconstruction from the bind-pose skeleton
-	# transform (ported from emote_render.gd, verified).
+	# Subtle leg weight-shift while the body idles (knee bends + tiny pelvis bob), composed
+	# on top of the body animation. Runs AFTER the AnimationPlayer applied this frame.
+	if _body_anim_on and _body_skeleton:
+		_update_leg_idle(delta)
+
+	# Runtime face-follow: glue the separate FaceArmature to the body 'head' bone using its
+	# CURRENT world transform (skel.global * bone_global_pose = true skinning transform),
+	# times the bind-time face↔head offset. Handles idle bob AND a turntable-rotated node.
 	if _follow_active and _body_skeleton and _face_armature and _head_bone_idx >= 0:
-		var head_pose: Transform3D = _body_skeleton.get_bone_global_pose(_head_bone_idx)
-		var head_origin: Vector3 = _skel_bind_origin + _skel_basis_norm * (head_pose.origin * _skel_scale_factor)
-		var head_basis: Basis = (_skel_basis_norm * head_pose.basis).orthonormalized()
-		var rot_delta: Basis = head_basis * _head_world_bind_basis.inverse()
-		var trans_delta: Vector3 = head_origin - _head_world_bind_origin
-		var pivot: Vector3 = _head_world_bind_origin
-		var new_origin: Vector3 = pivot + rot_delta * (_face_arm_rest_origin - pivot) + trans_delta
-		_face_armature.global_transform = Transform3D(rot_delta * _face_arm_rest_basis, new_origin)
+		var head_now: Transform3D = _body_skeleton.global_transform * _body_skeleton.get_bone_global_pose(_head_bone_idx)
+		_face_armature.global_transform = head_now * _face_off
 
 	# Camera: hero push-in (ping-pong) OR user-driven orbit.
 	if _hero_cam and not OS.has_environment("RELEASE_CAPTURE"):
@@ -558,45 +584,54 @@ func _process(delta: float) -> void:
 		_update_eyes(delta)
 
 func _update_hero_camera() -> void:
-	# Ping-pong dolly from a wide full-body shot to a tight face, ALONG the current
-	# orbit azimuth so it always frames the front (independent of the model's yaw).
+	# Clean ping-pong dolly: the aim stays on the model's vertical axis (x=z=0) so the
+	# subject is ALWAYS centered; it rises chest→face as we push in. Camera moves along the
+	# current orbit azimuth with a gentle constant downward tilt — no curving/off-centre path.
 	if _camera == null: return
 	var phase: float = fmod(_hero_elapsed, 2.0 * HERO_DURATION) / HERO_DURATION
 	var pp: float = phase if phase <= 1.0 else (2.0 - phase)
 	pp = smoothstep(0.0, 1.0, pp)
+	# Dolly between a wide pull-back and the user's EXACT current framing (their orbit
+	# target/dist/yaw/pitch/fov/view-pan) at the close end — so the close hero matches the
+	# portrait they composed, and the whole move stays centred the way they set it.
 	var yaw_rad := deg_to_rad(_orbit_yaw)
-	var dir := Vector3(sin(yaw_rad), 0.0, cos(yaw_rad))   # horizontal view direction
-	var close_aim: Vector3 = _head_world if _anim_playing else Vector3(0.0, 1.62, 0.05)
-	var aim: Vector3 = HERO_WIDE_AIM.lerp(close_aim + Vector3(0.0, 0.05, 0.0), pp)
-	var dist: float = lerpf(4.3, 0.8, pp)
-	var elev: float = lerpf(0.22, 0.08, pp)
-	_camera.position = aim + dir * dist + Vector3(0.0, elev, 0.0)
-	_camera.fov = lerpf(HERO_WIDE_FOV, HERO_CLOSE_FOV, pp)
+	var pitch_rad := deg_to_rad(_orbit_pitch)
+	var dir := Vector3(sin(yaw_rad) * cos(pitch_rad), sin(pitch_rad), cos(yaw_rad) * cos(pitch_rad))
+	var aim := Vector3(_orbit_target.x, lerpf(_orbit_target.y - 0.28, _orbit_target.y, pp), _orbit_target.z)
+	var dist: float = lerpf(_orbit_dist + 2.3, _orbit_dist, pp)
+	_camera.position = aim + dir * dist
 	_camera.look_at(aim, Vector3.UP)
+	_camera.fov = _orbit_fov
+	_camera.h_offset = float(p.get("view_pan", 0.0))   # same lens-shift/composition as the orbit view
 
-# ---- animation (face emote + body idle) -------------------------------------
+# ---- animation (face emote + body idle, independent toggles) ----------------
+func _anim_active() -> bool:
+	return _body_anim_on or _face_anim_on
+
 func _set_hero_cam(on: bool) -> void:
 	_hero_cam = on
 	if on:
 		_hero_elapsed = 0.0
-		if _camera: _camera.h_offset = 0.0   # the hero move centers the subject itself
+		if _camera: _camera.h_offset = 0.0
 	else:
 		if _camera: _camera.fov = _orbit_fov
 		_update_orbit_camera()
 
-func _set_anim_playing(on: bool) -> void:
-	# Plays the FACE emote (blend-shape performance: smile→surprise→blink→frown) on
-	# a static body. Body-idle + cross-armature head-follow is deliberately NOT used
-	# here: it only exists on the guy and its bind math assumes an un-transformed
-	# character node (true in look_dev, false here — we scale/rotate/place the node),
-	# which detaches the head. The turntable provides body motion; this drives the face.
-	_anim_playing = on
+# FACE emote (blend-shape performance). Independent of body idle.
+func _set_face_anim(on: bool) -> void:
+	_face_anim_on = on
 	if on:
-		if _face_anim_player:
-			_face_anim_player.play("emote")
-		# Play the imported body idle (guy only; her has none) and turn on face-follow
-		# so the separate face armature tracks the animated head bone. The turntable is
-		# gated off in _process while animating (it would fight the bind-basis follow).
+		if _face_anim_player: _face_anim_player.play("emote")
+	else:
+		if _face_anim_player: _face_anim_player.stop()
+		_zero_all_blendshapes()
+		_reapply_blendshapes()
+
+# BODY idle (+ face-follow so the separate face armature tracks the head bone, + subtle
+# leg weight-shift). Independent of the face emote; coexists with turntable + hero cam.
+func _set_body_anim(on: bool) -> void:
+	_body_anim_on = on
+	if on:
 		if _body_anim_player and _body_anim_player.get_animation_list().size() > 0:
 			var bn: String = _body_anim_player.get_animation_list()[0]
 			var ba: Animation = _body_anim_player.get_animation(bn)
@@ -604,17 +639,35 @@ func _set_anim_playing(on: bool) -> void:
 			_body_anim_player.play(bn)
 			_follow_active = _body_skeleton != null and _face_armature != null and _head_bone_idx >= 0
 		else:
-			_set_status("anim: face emote (no body idle on this character)")
+			_set_status("no body idle on this character")
 	else:
-		if _face_anim_player: _face_anim_player.stop()
 		if _body_anim_player: _body_anim_player.stop()
 		_follow_active = false
-		# restore the face armature to its captured rest transform (follow moved it)
+		_leg_clock = 0.0
+		_reset_leg_bones()
 		if _face_armature and is_instance_valid(_face_armature):
 			_face_armature.transform = _face_arm_rest_local
-		# restore the user's manual ARKit pose (the anim overwrote the shapes)
-		_zero_all_blendshapes()
-		_reapply_blendshapes()
+
+# Subtle leg weight-shift: counter-phase knee bend + tiny pelvis roll, composed on top of
+# the body idle (we multiply onto the current animated pose each frame). Very low amplitude.
+func _update_leg_idle(delta: float) -> void:
+	_leg_clock += delta
+	var t := _leg_clock
+	if _calf_l_idx >= 0:
+		var rl: Quaternion = _body_skeleton.get_bone_pose_rotation(_calf_l_idx)
+		_body_skeleton.set_bone_pose_rotation(_calf_l_idx, rl * Quaternion(Vector3(1, 0, 0), sin(t * 1.1) * deg_to_rad(2.2)))
+	if _calf_r_idx >= 0:
+		var rr: Quaternion = _body_skeleton.get_bone_pose_rotation(_calf_r_idx)
+		_body_skeleton.set_bone_pose_rotation(_calf_r_idx, rr * Quaternion(Vector3(1, 0, 0), sin(t * 1.1 + PI) * deg_to_rad(2.2)))
+	if _pelvis_idx >= 0:
+		var rp: Quaternion = _body_skeleton.get_bone_pose_rotation(_pelvis_idx)
+		_body_skeleton.set_bone_pose_rotation(_pelvis_idx, rp * Quaternion(Vector3(0, 0, 1), sin(t * 1.1) * deg_to_rad(1.0)))
+
+func _reset_leg_bones() -> void:
+	if _body_skeleton == null: return
+	for idx in [_calf_l_idx, _calf_r_idx, _pelvis_idx]:
+		if idx >= 0:
+			_body_skeleton.set_bone_pose_rotation(idx, _body_skeleton.get_bone_rest(idx).basis.get_rotation_quaternion())
 
 func _zero_all_blendshapes() -> void:
 	for sname in _bs_map.keys():
@@ -659,6 +712,9 @@ func _resolve_body_skeleton(root: Node) -> void:
 		if (bf and not uf) or (uf == bf and s.get_bone_count() < best.get_bone_count()):
 			best = s
 	_body_skeleton = best
+	_pelvis_idx = best.find_bone("pelvis")
+	_calf_l_idx = best.find_bone("calf_l")
+	_calf_r_idx = best.find_bone("calf_r")
 
 func _bind_face_to_head_bone(root: Node) -> void:
 	if _body_skeleton == null: return
@@ -672,16 +728,12 @@ func _bind_face_to_head_bone(root: Node) -> void:
 			break
 		for c in n.get_children(): stack.append(c)
 	if _face_armature == null: return
-	var head_rest: Transform3D = _body_skeleton.get_bone_global_rest(_head_bone_idx)
-	_face_arm_rest_origin = _face_armature.global_transform.origin
-	_face_arm_rest_basis = _face_armature.global_transform.basis
-	_face_arm_rest_local = _face_armature.transform
-	var sb: Basis = _body_skeleton.global_transform.basis
-	_skel_basis_norm = sb.orthonormalized()
-	_skel_scale_factor = sb.x.length()
-	_skel_bind_origin = _body_skeleton.global_transform.origin
-	_head_world_bind_origin = _skel_bind_origin + _skel_basis_norm * (head_rest.origin * _skel_scale_factor)
-	_head_world_bind_basis = (_skel_basis_norm * head_rest.basis).orthonormalized()
+	# Capture the face armature's transform RELATIVE to the head bone's world transform
+	# (at rest). At runtime: face.global = (skel.global * head_pose) * _face_off — which
+	# tracks the idle bob AND a turntable-rotated character node.
+	_face_arm_rest_local = _face_armature.transform   # for restore on stop
+	var head_world: Transform3D = _body_skeleton.global_transform * _body_skeleton.get_bone_global_rest(_head_bone_idx)
+	_face_off = head_world.affine_inverse() * _face_armature.global_transform
 
 func _find_face_mesh(root: Node) -> MeshInstance3D:
 	var stack: Array[Node] = [root]
@@ -765,7 +817,9 @@ func _clear_character() -> void:
 	_face_anim_player = null; _body_anim_player = null
 	_body_skeleton = null; _face_armature = null; _head_bone_idx = -1
 	_face_eye_skel = null; _eye_bone_l = -1; _eye_bone_r = -1
-	_anim_playing = false; _follow_active = false
+	_face_anim_on = false; _body_anim_on = false; _follow_active = false
+	_pelvis_idx = -1; _calf_l_idx = -1; _calf_r_idx = -1; _leg_clock = 0.0
+	_outfit_mats.clear()
 
 func _load_character(custom_path := "") -> void:
 	_clear_character()
@@ -888,8 +942,13 @@ func _wire_materials(root: Node) -> void:
 			var cloth := StandardMaterial3D.new()
 			cloth.albedo_color = _profile.get("outfit_color", Color(0.80, 0.81, 0.84))
 			cloth.roughness = 0.85; cloth.metallic = 0.0
+			# Grow-shell: inflate the shirt slightly along normals so the neck/shoulder skin
+			# can't poke through it when the body deforms. Tunable via "Outfit inflate".
+			cloth.grow = true
+			cloth.grow_amount = float(p.get("outfit_grow", 0.006))
 			for s in range(mesh.get_surface_count()):
 				mi.set_surface_override_material(s, cloth)
+			_outfit_mats.append(cloth)
 
 func _wire_face_by_index(mi: MeshInstance3D, skin, teeth, eye_r, eye_l, hide) -> void:
 	var imap: Dictionary = _profile["face_index_map"]
@@ -1164,7 +1223,7 @@ func _update_eye_focus() -> void:
 #  - Static UE-match captures (no anim) skip both, holding the manual focal for stability.
 func _update_eyes(delta: float) -> void:
 	if _face_eye_skel == null or _eye_bone_l < 0: return
-	var capture_static := OS.has_environment("RELEASE_CAPTURE") and not _anim_playing
+	var capture_static := OS.has_environment("RELEASE_CAPTURE") and not _anim_active()
 	var look_cam := bool(p.get("eye_look_cam", true)) and _camera != null and not capture_static
 	var target: Vector3
 	if look_cam:
@@ -1364,9 +1423,12 @@ func _setup_ui() -> void:
 	var hero_cb := CheckBox.new(); hero_cb.text = "Hero camera (ping-pong push-in)"
 	hero_cb.toggled.connect(func(on): _set_hero_cam(on))
 	_style_checkbox(hero_cb); vb.add_child(hero_cb)
-	var anim_cb := CheckBox.new(); anim_cb.text = "Play face animation (emote)"
-	anim_cb.toggled.connect(func(on): _set_anim_playing(on))
-	_style_checkbox(anim_cb); vb.add_child(anim_cb)
+	var face_cb := CheckBox.new(); face_cb.text = "Face animation (emote)"
+	face_cb.toggled.connect(func(on): _set_face_anim(on))
+	_style_checkbox(face_cb); vb.add_child(face_cb)
+	var body_cb := CheckBox.new(); body_cb.text = "Body animation (idle + legs)"
+	body_cb.toggled.connect(func(on): _set_body_anim(on))
+	_style_checkbox(body_cb); vb.add_child(body_cb)
 
 	_section(vb, "SCENE")
 	_slider(vb, "model_yaw", "Model yaw", 0.0, 360.0, 0.5)
@@ -1404,6 +1466,8 @@ func _setup_ui() -> void:
 	_section(vb, "SKIN (face + body)")
 	_color(vb, "skin_tint", "Skin colour (tint)")
 	_slider(vb, "skin_bright", "Skin lightness", 0.0, 2.5, 0.01)
+	_slider(vb, "shadow_strength", "Shadow strength (hair on face)", 0.0, 1.0, 0.01)
+	_slider(vb, "outfit_grow", "Outfit inflate (anti-poke) m", 0.0, 0.03, 0.0005)
 	_slider(vb, "sss", "Subsurface", 0.0, 1.0, 0.01)
 	_slider(vb, "scatter", "Scatter strength", 0.0, 3.0, 0.01)
 	_slider(vb, "skin_smooth", "Skin smoothness", 0.0, 4.0, 0.01)
@@ -1774,6 +1838,8 @@ func _apply_all() -> void:
 		var b: float = float(p.get("skin_bright", 1.0))
 		var t: Color = p.skin_tint
 		m.set_shader_parameter("albedo", Color(t.r * b, t.g * b, t.b * b, 1.0))
+		# shadow_floor: lower = darker/visible cast shadows (hair on face). strength→floor inverse.
+		m.set_shader_parameter("shadow_floor", clampf(1.0 - float(p.get("shadow_strength", 0.7)), 0.0, 1.0))
 		m.set_shader_parameter("subsurface_scattering_strength", p.sss)
 		m.set_shader_parameter("scatter_strength", p.scatter)
 		m.set_shader_parameter("skin_smoothness", p.skin_smooth)
@@ -1801,6 +1867,8 @@ func _apply_all() -> void:
 		m.set_shader_parameter("roughness_val", p.eye_rough)
 		m.set_shader_parameter("specular_val", p.eye_spec)
 		m.set_shader_parameter("clearcoat_val", p.eye_clearcoat)
+	for m in _outfit_mats:
+		(m as StandardMaterial3D).grow_amount = float(p.get("outfit_grow", 0.006))
 	if _character: _character.rotation.y = deg_to_rad(p.model_yaw)
 	if _overlay:
 		_overlay.modulate = Color(1, 1, 1, p.overlay)
@@ -1899,6 +1967,10 @@ func _load_preset_file(path: String) -> void:
 	if data.has("cam_tx"):    _orbit_target.x = float(data["cam_tx"])
 	if data.has("cam_ty"):    _orbit_target.y = float(data["cam_ty"])
 	if data.has("cam_tz"):    _orbit_target.z = float(data["cam_tz"])
+	# Remember this as the STARTING camera so "Reset view" returns here.
+	_start_orbit_yaw = _orbit_yaw; _start_orbit_pitch = _orbit_pitch
+	_start_orbit_dist = _orbit_dist; _start_orbit_fov = _orbit_fov
+	_start_orbit_target = _orbit_target
 	if _camera and not OS.has_environment("RELEASE_CAPTURE"):
 		_camera.fov = _orbit_fov; _update_orbit_camera()
 	_refreeze_abs_point()
@@ -2044,6 +2116,9 @@ func _unhandled_input(e: InputEvent) -> void:
 			_refresh_controls()   # keep the Orbit/Target sliders truthful while dragging
 
 func _reset_orbit() -> void:
-	_orbit_yaw = DEFAULT_ORBIT_YAW; _orbit_pitch = DEFAULT_ORBIT_PITCH
-	_orbit_dist = DEFAULT_ORBIT_DIST; _orbit_target = DEFAULT_ORBIT_TARGET
-	_orbit_fov = 28.0; if _camera: _camera.fov = _orbit_fov
+	# Return to the STARTING camera (the loaded preset's camera), not hardcoded defaults.
+	_orbit_yaw = _start_orbit_yaw; _orbit_pitch = _start_orbit_pitch
+	_orbit_dist = _start_orbit_dist; _orbit_target = _start_orbit_target
+	_orbit_fov = _start_orbit_fov; if _camera: _camera.fov = _orbit_fov
+	_refresh_controls()
+	_update_orbit_camera()
