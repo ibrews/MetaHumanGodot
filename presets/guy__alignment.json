@@ -78,5 +78,12 @@
   "sss": 0.1,
   "sss_depth": 6.0,
   "view_pan": -0.18,
-  "zoff": -0.175
+  "zoff": -0.175,
+  "cam_yaw": -72.0,
+  "cam_pitch": 6.5,
+  "cam_dist": 0.65,
+  "cam_fov": 28.0,
+  "cam_tx": 0.0,
+  "cam_ty": 1.62,
+  "cam_tz": 0.0
 }

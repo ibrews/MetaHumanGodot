@@ -1165,10 +1165,18 @@ func _update_alive_eyes(delta: float) -> void:
 	_alive_clock += delta
 	var cam_pos := _camera.global_transform.origin
 	var rb := _camera.global_transform.basis
-	# saccade: jump to a fresh small offset every fixation, then ease in fast
+	# saccade: each fixation, sometimes hold brief eye contact (small offset near the
+	# camera), sometimes glance candidly AWAY (larger offset, biased down/sideways) so
+	# it isn't a constant stare.
 	if _alive_clock >= _sacc_next:
-		_sacc_tgt = Vector2(_rng.randfn(0.0, 0.018), _rng.randfn(0.0, 0.012))
-		_sacc_next = _alive_clock + _rng.randf_range(0.5, 2.0)
+		if _rng.randf() < 0.45:
+			# candid glance away from the lens (down-biased) for a beat
+			_sacc_tgt = Vector2(_rng.randf_range(-0.35, 0.35), _rng.randf_range(-0.32, 0.12))
+			_sacc_next = _alive_clock + _rng.randf_range(0.7, 1.8)
+		else:
+			# brief near-camera fixation (light eye contact) + micro-darts
+			_sacc_tgt = Vector2(_rng.randfn(0.0, 0.02), _rng.randfn(0.0, 0.014))
+			_sacc_next = _alive_clock + _rng.randf_range(0.4, 1.1)
 	_sacc_off = _sacc_off.lerp(_sacc_tgt, clampf(delta * 20.0, 0.0, 1.0))
 	var drift := Vector2(sin(_alive_clock * 6.1) * 0.0016, cos(_alive_clock * 4.7) * 0.0013)
 	var focal := cam_pos + rb.x * (_sacc_off.x + drift.x) + rb.y * (_sacc_off.y + drift.y)
@@ -1975,19 +1983,21 @@ func _unhandled_input(e: InputEvent) -> void:
 		elif mb.button_index == MOUSE_BUTTON_RIGHT or mb.button_index == MOUSE_BUTTON_MIDDLE:
 			_drag_mode = 2 if mb.pressed else 0
 		elif mb.pressed and mb.button_index == MOUSE_BUTTON_WHEEL_UP:
-			_orbit_dist = maxf(0.1, _orbit_dist - 0.08)
+			_orbit_dist = maxf(0.1, _orbit_dist - 0.08); _refresh_controls()
 		elif mb.pressed and mb.button_index == MOUSE_BUTTON_WHEEL_DOWN:
-			_orbit_dist = minf(10.0, _orbit_dist + 0.08)
+			_orbit_dist = minf(10.0, _orbit_dist + 0.08); _refresh_controls()
 	elif e is InputEventMouseMotion and _drag_mode > 0:
 		var rel := (e as InputEventMouseMotion).relative
 		if _drag_mode == 1:  # orbit
 			_orbit_yaw -= rel.x * 0.35
 			_orbit_pitch = clampf(_orbit_pitch + rel.y * 0.25, -89.0, 89.0)
+			_refresh_controls()
 		elif _drag_mode == 2:  # pan
 			var right := _camera.global_transform.basis.x
 			var up    := _camera.global_transform.basis.y
 			_orbit_target -= right * rel.x * _orbit_dist * 0.002
 			_orbit_target += up    * rel.y * _orbit_dist * 0.002
+			_refresh_controls()   # keep the Orbit/Target sliders truthful while dragging
 
 func _reset_orbit() -> void:
 	_orbit_yaw = DEFAULT_ORBIT_YAW; _orbit_pitch = DEFAULT_ORBIT_PITCH
