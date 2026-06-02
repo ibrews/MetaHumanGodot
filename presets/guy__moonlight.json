@@ -14,9 +14,9 @@
   "cam_dist": 0.82,
   "cam_fov": 27.0,
   "cam_pitch": 6.5,
-  "cam_tx": -0.00246450142003596,
-  "cam_ty": 1.5498218536377,
-  "cam_tz": 0.0164465252310038,
+  "cam_tx": -0.0213922001421452,
+  "cam_ty": 1.54819238185883,
+  "cam_tz": -0.0412061847746372,
   "cam_yaw": -72.0,
   "cap_pan": 0.04,
   "catch": 0.18,
@@ -46,7 +46,7 @@
     0.483439207077026,
     0.8515625
   ],
-  "glow": 0.45,
+  "glow": 0.46,
   "hair_back_cut": 0.035,
   "hair_back_inset": 0.009,
   "hair_col": [
@@ -74,9 +74,10 @@
   ],
   "micro": 0.69,
   "model_yaw": 272.0,
+  "outfit_grow": 0.0065,
   "overlay": 0.0,
   "overlay_off_x": 0.0,
-  "overlay_stretch_x": 1.0,
+  "overlay_stretch_x": 0.994,
   "rim": 8.5,
   "rim_col": [
     0.4765625,
@@ -84,8 +85,9 @@
     0.195465087890625
   ],
   "saturation": 0.65,
-  "scatter": 1.5,
+  "scatter": 1.49,
   "sclera_tint": 1.1,
+  "shadow_strength": 0.7,
   "skin_bright": 1.0,
   "skin_nrm": 0.55,
   "skin_rough": 0.7,
@@ -96,10 +98,8 @@
     1.0,
     1.0
   ],
-  "sss": 0.13,
+  "sss": 0.12,
   "sss_depth": 8.3,
   "view_pan": -0.13,
-  "zoff": -0.175,
-  "shadow_strength": 0.7,
-  "outfit_grow": 0.006
+  "zoff": -0.175
 }

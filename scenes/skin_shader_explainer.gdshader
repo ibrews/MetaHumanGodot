@@ -93,10 +93,14 @@ varying float linear_depth;
 varying float smooth_depth;
 varying float sss_tex;
 
+// Push verts inward along the normal (m). Used on the BODY skin only, to tuck its
+// neck/clavicle UNDER the face bust-cap + shirt collar so it can't poke through.
+uniform float vertex_shrink = 0.0;
 void vertex() {
 	UV = UV * uv1_scale.xy + uv1_offset.xy;
 	// Detail UV Layer: UV2
 	UV2 = UV2 * uv2_scale.xy + uv2_offset.xy;
+	VERTEX -= NORMAL * vertex_shrink;
 }
 
 vec3 normal_blending(vec3 b, vec3 d) {

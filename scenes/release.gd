@@ -134,6 +134,7 @@ var p := {
 	"skin_bright": 1.0,            # albedo brightness multiplier (>1 lightens past current)
 	"shadow_strength": 0.7,        # how dark cast shadows (e.g. hair on face) get; higher = stronger
 	"outfit_grow": 0.006,          # inflate the shirt along normals (m) so skin can't poke through
+	"body_shrink": 0.0,            # tuck the BODY skin inward (m). NOTE: the collar poke is the FACE bust-cap, not body, so this knob doesn't fix it — kept as a general tuck control
 	# hair
 	"hair_col": Color(0.20, 0.13, 0.075), "hair_thresh": 0.07,
 	"hair_root": 0.42, "hair_rough": 0.72, "hair_spec": 0.12,
@@ -248,7 +249,9 @@ var _start_orbit_dist := 1.5
 var _start_orbit_fov := 28.0
 var _start_orbit_target := Vector3(0.0, 1.33, 0.0)
 var _outfit_mats: Array = []
+var _body_skin_mat: ShaderMaterial   # the BODY skin material (for the anti-poke vertex shrink)
 var _face_off := Transform3D.IDENTITY   # face armature relative to head bone (world, at bind)
+const FACE_BOB_DAMP := 1.0               # full head-bob follow (damping opened a neck gap — worse)
 
 # ---- eye gaze (item 3, redesigned): both eyes LOOK-AT a single focal point. The 8
 # ARKit eyeLook* shapes were stripped (horror-eye fix), so we aim the
@@ -479,15 +482,18 @@ func _spot(nm: String, ue_loc: Array, pitch: float, yaw: float, col: Color,
 	s.shadow_enabled = shadow; s.light_specular = 0.4
 	if shadow:
 		# Tame shadow acne/shimmer (the source of the flicker) + soften the edge a touch.
-		s.shadow_bias = 0.04
-		s.shadow_normal_bias = 2.0
-		s.shadow_blur = 1.3
+		s.shadow_bias = 0.025
+		s.shadow_normal_bias = 0.6   # low, so contact shadows (hair on forehead) actually land
+		s.shadow_blur = 1.1
 	add_child(s); return s
 
 func _setup_lights() -> void:
+	# Shadows on the front lights (key + keyrect + the bright fill) so hair/brow/nose cast
+	# onto the face — the fill is the brightest, so it MUST cast or it washes the key's shadow
+	# out. Darkness is controlled live by the "Shadow strength" slider (shadow_opacity).
 	_lights["key"] = _spot("KeyLight_Spot", [63.40, 67.03, 279.20], -75.27, -138.92, p.key_col, 65.0, 20.0, true)
-	_lights["keyrect"] = _spot("KeyLight_Rect", [63.40, 67.03, 279.20], -75.27, -138.92, p.keyrect_col, 80.0, 50.0, false)
-	_lights["fill"] = _spot("FillLight", [28.57, 111.70, 111.70], -2.20, -96.03, p.fill_col, 70.0, 40.0, false)
+	_lights["keyrect"] = _spot("KeyLight_Rect", [63.40, 67.03, 279.20], -75.27, -138.92, p.keyrect_col, 80.0, 50.0, true)
+	_lights["fill"] = _spot("FillLight", [28.57, 111.70, 111.70], -2.20, -96.03, p.fill_col, 70.0, 40.0, true)
 	_lights["rim"] = _spot("RimLight", [-136.30, -87.34, 140.94], -1.00, 34.20, p.rim_col, 80.0, 45.4, false)
 	var amb := OmniLight3D.new(); amb.name = "AmbientLight"
 	amb.position = _ue_pos(0.0, 0.0, 300.0)
@@ -567,7 +573,13 @@ func _process(delta: float) -> void:
 	# CURRENT world transform (skel.global * bone_global_pose = true skinning transform),
 	# times the bind-time face↔head offset. Handles idle bob AND a turntable-rotated node.
 	if _follow_active and _body_skeleton and _face_armature and _head_bone_idx >= 0:
-		var head_now: Transform3D = _body_skeleton.global_transform * _body_skeleton.get_bone_global_pose(_head_bone_idx)
+		var hp: Transform3D = _body_skeleton.get_bone_global_pose(_head_bone_idx)
+		var hr: Transform3D = _body_skeleton.get_bone_global_rest(_head_bone_idx)
+		# Dampen the idle head-bob TRANSLATION (keep full rotation) so the neck/bust doesn't
+		# ride UP through the shirt's collar opening. Done in skeleton-local space, so a
+		# turntable-rotated node is unaffected. FACE_BOB_DAMP 0=no bob (glued), 1=full bob.
+		hp.origin = hr.origin.lerp(hp.origin, FACE_BOB_DAMP)
+		var head_now: Transform3D = _body_skeleton.global_transform * hp
 		_face_armature.global_transform = head_now * _face_off
 
 	# Camera: hero push-in (ping-pong) OR user-driven orbit.
@@ -819,7 +831,7 @@ func _clear_character() -> void:
 	_face_eye_skel = null; _eye_bone_l = -1; _eye_bone_r = -1
 	_face_anim_on = false; _body_anim_on = false; _follow_active = false
 	_pelvis_idx = -1; _calf_l_idx = -1; _calf_r_idx = -1; _leg_clock = 0.0
-	_outfit_mats.clear()
+	_outfit_mats.clear(); _body_skin_mat = null
 
 func _load_character(custom_path := "") -> void:
 	_clear_character()
@@ -913,6 +925,7 @@ func _wire_materials(root: Node) -> void:
 	var face_skin := _make_skin(_profile["head_bc"], _profile["head_n"], _profile["head_srmf"], _profile.get("head_scatter", ""))
 	var body_skin := _make_skin(_profile["body_bc"], _profile["body_n"], _profile["body_srmf"], _profile.get("body_scatter", ""))
 	_skin_mats = [face_skin, body_skin]
+	_body_skin_mat = body_skin   # tag the body material for the anti-poke shrink
 	var eye_l := _make_eye("L"); var eye_r := _make_eye("R")
 	_eye_mats = [eye_l, eye_r]
 	var hide_mat := _make_hide()
@@ -1468,6 +1481,7 @@ func _setup_ui() -> void:
 	_slider(vb, "skin_bright", "Skin lightness", 0.0, 2.5, 0.01)
 	_slider(vb, "shadow_strength", "Shadow strength (hair on face)", 0.0, 1.0, 0.01)
 	_slider(vb, "outfit_grow", "Outfit inflate (anti-poke) m", 0.0, 0.03, 0.0005)
+	_slider(vb, "body_shrink", "Body tuck (anti-poke) m", 0.0, 0.02, 0.0005)
 	_slider(vb, "sss", "Subsurface", 0.0, 1.0, 0.01)
 	_slider(vb, "scatter", "Scatter strength", 0.0, 3.0, 0.01)
 	_slider(vb, "skin_smooth", "Skin smoothness", 0.0, 4.0, 0.01)
@@ -1830,6 +1844,10 @@ func _apply_all() -> void:
 		if _lights.has(k):
 			var L: Light3D = _lights[k]
 			L.light_energy = p[k]; L.light_color = p[col_map[k]]
+			# "Shadow strength" → shadow darkness on every shadow-casting light (this is
+			# what actually makes hair/nose/brow cast onto the face). 0 = no shadow (flat).
+			if L.shadow_enabled:
+				L.shadow_opacity = clampf(float(p.get("shadow_strength", 0.7)), 0.0, 1.0)
 	if _catch:
 		_catch.light_energy = p.catch; _catch.light_color = p.catch_col
 		if _camera:
@@ -1838,8 +1856,6 @@ func _apply_all() -> void:
 		var b: float = float(p.get("skin_bright", 1.0))
 		var t: Color = p.skin_tint
 		m.set_shader_parameter("albedo", Color(t.r * b, t.g * b, t.b * b, 1.0))
-		# shadow_floor: lower = darker/visible cast shadows (hair on face). strength→floor inverse.
-		m.set_shader_parameter("shadow_floor", clampf(1.0 - float(p.get("shadow_strength", 0.7)), 0.0, 1.0))
 		m.set_shader_parameter("subsurface_scattering_strength", p.sss)
 		m.set_shader_parameter("scatter_strength", p.scatter)
 		m.set_shader_parameter("skin_smoothness", p.skin_smooth)
@@ -1850,6 +1866,10 @@ func _apply_all() -> void:
 		m.set_shader_parameter("sss_depth_scale", p.sss_depth)
 		m.set_shader_parameter("use_micro_detail", p.micro > 0.001)
 		m.set_shader_parameter("micro_normal_strength", p.micro)
+		m.set_shader_parameter("vertex_shrink", 0.0)   # default: no shrink (face + any custom skin)
+	# Body skin only: tuck it inward so its neck/clavicle hides under the bust cap + shirt.
+	if _body_skin_mat and is_instance_valid(_body_skin_mat):
+		_body_skin_mat.set_shader_parameter("vertex_shrink", float(p.get("body_shrink", 0.006)))
 	for m in _hair_mats:
 		m.set_shader_parameter("hair_color", p.hair_col)
 		m.set_shader_parameter("alpha_threshold", p.hair_thresh)
