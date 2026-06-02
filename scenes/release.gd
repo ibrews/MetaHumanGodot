@@ -141,7 +141,7 @@ var p := {
 	"saturation": 1.06, "brightness": 1.0, "contrast": 1.05,
 	# scene
 	"model_yaw": 272.5, "overlay": 0.0, "zoff": 0.0,
-	"view_pan": -1.2,    # interactive frustum shift so subject clears the panel
+	"view_pan": -0.22,   # interactive camera h_offset: slides subject RIGHT of the left panel
 	"cap_pan": -0.176,   # capture-time centering
 	# DOF (applied to _cam_attrs)
 	"dof_focus": 1.3, "dof_blur": 0.0,
@@ -219,8 +219,27 @@ const HERO_WIDE_AIM := Vector3(0.0, 1.02, 0.0)
 var _head_world := Vector3(0.0, 1.62, 0.05)
 
 var _anim_playing := false
+var _follow_active := false      # face-follow runs only while the body idle plays
 var _face_anim_player: AnimationPlayer
 var _body_anim_player: AnimationPlayer
+
+# ---- eye gaze (item 3): the 8 eyeLook* ARKit shapes were stripped from the bake
+# (horror-eye fix), so drive gaze by rotating the FACIAL_L_Eye / FACIAL_R_Eye bones
+# in the face skeleton instead. eyeBlink/Squint/Wide remain real blendshapes.
+const EYE_LOOK := {
+	"eyeLookUpLeft": ["L", "pitch", 1.0], "eyeLookDownLeft": ["L", "pitch", -1.0],
+	"eyeLookInLeft": ["L", "yaw", 1.0],   "eyeLookOutLeft": ["L", "yaw", -1.0],
+	"eyeLookUpRight": ["R", "pitch", 1.0], "eyeLookDownRight": ["R", "pitch", -1.0],
+	"eyeLookInRight": ["R", "yaw", -1.0],  "eyeLookOutRight": ["R", "yaw", 1.0],
+}
+const EYE_GAZE_MAX := deg_to_rad(28.0)   # full slider (1.0) = 28° eyeball rotation
+var _eye_yaw_axis := Vector3(0, 1, 0)     # bone-local axis for left/right gaze (calibrated: convergence correct)
+var _eye_pitch_axis := Vector3(-1, 0, 0)  # bone-local axis for up/down gaze (calibrated: +X looked DOWN, so negate)
+var _face_eye_skel: Skeleton3D
+var _eye_bone_l := -1
+var _eye_bone_r := -1
+var _eye_rest_l := Quaternion.IDENTITY
+var _eye_rest_r := Quaternion.IDENTITY
 const ANIM_DURATION := 8.4
 const KEYPOSES := {
 	"neutral": {},
@@ -265,6 +284,11 @@ vw.release(); print('wrote', out, w, 'x', h, len(files), 'frames')
 """
 
 func _ready() -> void:
+	# Interactive launch starts in borderless windowed-fullscreen (Godot's
+	# WINDOW_MODE_FULLSCREEN is a borderless desktop-sized window, not exclusive).
+	# Skipped during headless capture, which drives a fixed --resolution offscreen.
+	if not OS.has_environment("RELEASE_CAPTURE"):
+		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
 	_char_key = OS.get_environment("RELEASE_CHAR") if OS.has_environment("RELEASE_CHAR") else "guy"
 	if not PROFILES.has(_char_key):
 		_char_key = "guy"
@@ -285,7 +309,9 @@ func _ready() -> void:
 		for tok in OS.get_environment("RELEASE_BS").split(","):
 			var kv := tok.split("=")
 			if kv.size() == 2:
-				_set_blendshape(kv[0].strip_edges(), float(kv[1]))
+				var bsn := kv[0].strip_edges()
+				if EYE_LOOK.has(bsn): _set_eye_look(bsn, float(kv[1]))
+				else: _set_blendshape(bsn, float(kv[1]))
 	# Headless QA hook: RELEASE_TOGGLE=1 exercises the live character switch.
 	if OS.has_environment("RELEASE_TOGGLE"):
 		_switch_character()
@@ -297,8 +323,9 @@ func _ready() -> void:
 	# Headless QA hooks for the toggles. RELEASE_ANIM_SEEK sets the face-anim time.
 	if OS.has_environment("RELEASE_ANIM"):
 		_set_anim_playing(true)
-		if _face_anim_player and OS.has_environment("RELEASE_ANIM_SEEK"):
-			_face_anim_player.seek(_envf("RELEASE_ANIM_SEEK", 0.0), true)
+		if OS.has_environment("RELEASE_ANIM_SEEK"):
+			if _face_anim_player: _face_anim_player.seek(_envf("RELEASE_ANIM_SEEK", 0.0), true)
+			if _body_anim_player: _body_anim_player.seek(_envf("RELEASE_ANIM_SEEK", 0.0), true)
 	if OS.has_environment("RELEASE_HERO"):
 		_set_hero_cam(true)
 		_hero_elapsed = _envf("RELEASE_HERO_T", 0.0)
@@ -467,12 +494,32 @@ func _update_orbit_camera() -> void:
 	_camera.position = _orbit_target + offset
 	_camera.look_at(_orbit_target, Vector3.UP)
 	_camera.fov = _orbit_fov
+	# Lens-shift the subject right of the left settings panel (item 1). Negative
+	# h_offset slides the framed subject to the RIGHT (same sign convention as the
+	# capture-time cap_pan). Tunable live via the "View pan" slider.
+	_camera.h_offset = float(p.get("view_pan", -0.22))
 
 func _process(delta: float) -> void:
-	# Turntable spins the MODEL (composes with hero cam + orbit).
-	if _turntable and _character and not OS.has_environment("RELEASE_CAPTURE"):
+	# Turntable spins the MODEL (composes with hero cam + orbit). Gated off while the
+	# body idle plays — the bind-basis face-follow assumes a fixed node yaw, so a live
+	# turntable would detach the head. The idle itself supplies body motion.
+	if _turntable and not _anim_playing and _character and not OS.has_environment("RELEASE_CAPTURE"):
 		_character.rotation.y += deg_to_rad(TURNTABLE_SPEED) * delta
 		p["model_yaw"] = rad_to_deg(_character.rotation.y)
+
+	# Runtime face-follow: glue the separate FaceArmature to the body's animated 'head'
+	# bone while the idle plays (two separate skeletons — body 341 / face 874 — so the
+	# head detaches otherwise). Drift-free reconstruction from the bind-pose skeleton
+	# transform (ported from emote_render.gd, verified).
+	if _follow_active and _body_skeleton and _face_armature and _head_bone_idx >= 0:
+		var head_pose: Transform3D = _body_skeleton.get_bone_global_pose(_head_bone_idx)
+		var head_origin: Vector3 = _skel_bind_origin + _skel_basis_norm * (head_pose.origin * _skel_scale_factor)
+		var head_basis: Basis = (_skel_basis_norm * head_pose.basis).orthonormalized()
+		var rot_delta: Basis = head_basis * _head_world_bind_basis.inverse()
+		var trans_delta: Vector3 = head_origin - _head_world_bind_origin
+		var pivot: Vector3 = _head_world_bind_origin
+		var new_origin: Vector3 = pivot + rot_delta * (_face_arm_rest_origin - pivot) + trans_delta
+		_face_armature.global_transform = Transform3D(rot_delta * _face_arm_rest_basis, new_origin)
 
 	# Camera: hero push-in (ping-pong) OR user-driven orbit.
 	if _hero_cam and not OS.has_environment("RELEASE_CAPTURE"):
@@ -518,8 +565,24 @@ func _set_anim_playing(on: bool) -> void:
 	if on:
 		if _face_anim_player:
 			_face_anim_player.play("emote")
+		# Play the imported body idle (guy only; her has none) and turn on face-follow
+		# so the separate face armature tracks the animated head bone. The turntable is
+		# gated off in _process while animating (it would fight the bind-basis follow).
+		if _body_anim_player and _body_anim_player.get_animation_list().size() > 0:
+			var bn: String = _body_anim_player.get_animation_list()[0]
+			var ba: Animation = _body_anim_player.get_animation(bn)
+			if ba: ba.loop_mode = Animation.LOOP_LINEAR
+			_body_anim_player.play(bn)
+			_follow_active = _body_skeleton != null and _face_armature != null and _head_bone_idx >= 0
+		else:
+			_set_status("anim: face emote (no body idle on this character)")
 	else:
 		if _face_anim_player: _face_anim_player.stop()
+		if _body_anim_player: _body_anim_player.stop()
+		_follow_active = false
+		# restore the face armature to its captured rest transform (follow moved it)
+		if _face_armature and is_instance_valid(_face_armature):
+			_face_armature.transform = _face_arm_rest_local
 		# restore the user's manual ARKit pose (the anim overwrote the shapes)
 		_zero_all_blendshapes()
 		_reapply_blendshapes()
@@ -672,7 +735,8 @@ func _clear_character() -> void:
 		_face_anim_player.queue_free()
 	_face_anim_player = null; _body_anim_player = null
 	_body_skeleton = null; _face_armature = null; _head_bone_idx = -1
-	_anim_playing = false
+	_face_eye_skel = null; _eye_bone_l = -1; _eye_bone_r = -1
+	_anim_playing = false; _follow_active = false
 
 func _load_character(custom_path := "") -> void:
 	_clear_character()
@@ -724,6 +788,15 @@ func _load_character(custom_path := "") -> void:
 	var aabb3 := _world_aabb(node)
 	_head_world = Vector3(0.0, aabb3.position.y + aabb3.size.y - 0.12, 0.05)
 	_build_face_animation(node)
+	# Body idle + face-follow (item 2). Resolve the BODY skeleton, grab the imported
+	# idle AnimationPlayer (stopped until the toggle), then bind the separate face
+	# armature to the body 'head' bone. All guarded — her GLB has no idle/face split,
+	# so this no-ops gracefully and she stays static. Bind must happen with the idle
+	# STOPPED so the rest pose is captured cleanly (node already scaled/placed/yawed).
+	_resolve_body_skeleton(node)
+	_find_body_anim_player(node)
+	_resolve_eye_bones(node)          # item 3: FACIAL_L/R_Eye for bone-driven gaze
+	_bind_face_to_head_bone(node)
 
 func _switch_character() -> void:
 	var i := CHAR_ORDER.find(_char_key)
@@ -750,6 +823,7 @@ func _reapply_blendshapes() -> void:
 		if v == 0.0: continue
 		for pair in _bs_map[sname]:
 			pair[0].set_blend_shape_value(pair[1], v)
+	_apply_eye_gaze()   # re-drive eyeLook* gaze (bone-based, not in _bs_map)
 
 # ---- material wiring (profile-driven) ---------------------------------------
 func _wire_materials(root: Node) -> void:
@@ -997,6 +1071,51 @@ func _set_blendshape(sname: String, v: float) -> void:
 		var mi: MeshInstance3D = pair[0]
 		mi.set_blend_shape_value(pair[1], v)
 
+# ---- eye gaze (bone-driven) -------------------------------------------------
+func _resolve_eye_bones(root: Node) -> void:
+	_face_eye_skel = null; _eye_bone_l = -1; _eye_bone_r = -1
+	var stack: Array[Node] = [root]
+	while stack.size() > 0:
+		var n: Node = stack.pop_back()
+		if n is Skeleton3D:
+			var s := n as Skeleton3D
+			var li := s.find_bone("FACIAL_L_Eye")
+			var ri := s.find_bone("FACIAL_R_Eye")
+			if li >= 0 and ri >= 0:
+				_face_eye_skel = s; _eye_bone_l = li; _eye_bone_r = ri
+				_eye_rest_l = s.get_bone_pose_rotation(li)
+				_eye_rest_r = s.get_bone_pose_rotation(ri)
+				return
+		for c in n.get_children(): stack.append(c)
+
+func _set_eye_look(sname: String, v: float) -> void:
+	_bs_values[sname] = v
+	_apply_eye_gaze()
+
+func _apply_eye_gaze() -> void:
+	if _face_eye_skel == null: return
+	var ly := 0.0; var lp := 0.0; var ry := 0.0; var rp := 0.0
+	for nm in EYE_LOOK.keys():
+		var v: float = float(_bs_values.get(nm, 0.0))
+		if v == 0.0: continue
+		var spec: Array = EYE_LOOK[nm]
+		var amt: float = v * float(spec[2])
+		if spec[0] == "L":
+			if spec[1] == "yaw": ly += amt
+			else: lp += amt
+		else:
+			if spec[1] == "yaw": ry += amt
+			else: rp += amt
+	_apply_one_eye(_eye_bone_l, _eye_rest_l, ly, lp)
+	_apply_one_eye(_eye_bone_r, _eye_rest_r, ry, rp)
+
+func _apply_one_eye(idx: int, rest: Quaternion, yaw: float, pitch: float) -> void:
+	if idx < 0 or _face_eye_skel == null: return
+	var q: Quaternion = rest \
+		* Quaternion(_eye_yaw_axis, yaw * EYE_GAZE_MAX) \
+		* Quaternion(_eye_pitch_axis, pitch * EYE_GAZE_MAX)
+	_face_eye_skel.set_bone_pose_rotation(idx, q)
+
 func _world_aabb(node: Node) -> AABB:
 	var aabb := AABB(); var first := true
 	for mi in _find_meshes(node):
@@ -1051,9 +1170,14 @@ func _setup_ui() -> void:
 	_panel.anchor_top = 0.0; _panel.anchor_bottom = 1.0
 	_panel.offset_left = 0.0; _panel.offset_top = 0.0
 	_panel.offset_right = _panel_width; _panel.offset_bottom = 0.0
+	# clip_contents keeps the controls inside the panel rect: when the resize handle
+	# is dragged narrow (or the panel is collapsed to 0), content is clipped instead
+	# of spilling across the 3D view. The AUTO horizontal scrollbar keeps every
+	# control reachable at any width.
+	_panel.clip_contents = true
 	layer.add_child(_panel)
 	var scroll := ScrollContainer.new()
-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
 	_panel.add_child(scroll)
 	var vb := VBoxContainer.new()
 	vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -1070,6 +1194,15 @@ func _setup_ui() -> void:
 	loadcustom.pressed.connect(func(): _file_dialog.popup_centered()); vb.add_child(loadcustom)
 	var bsbtn := Button.new(); bsbtn.text = "Toggle ARKit shapes panel [B]"
 	bsbtn.pressed.connect(_toggle_bs_panel); vb.add_child(bsbtn)
+	# Reset (camera/view) + Quit
+	var rq := HBoxContainer.new()
+	var resetbtn := Button.new(); resetbtn.text = "Reset view [R]"
+	resetbtn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	resetbtn.pressed.connect(_reset_orbit); rq.add_child(resetbtn)
+	var quitbtn := Button.new(); quitbtn.text = "Quit [Esc]"
+	quitbtn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	quitbtn.pressed.connect(func(): get_tree().quit()); rq.add_child(quitbtn)
+	vb.add_child(rq)
 	_status = Label.new(); _status.add_theme_color_override("font_color", Color(0.6, 0.9, 0.6))
 	vb.add_child(_status)
 
@@ -1092,6 +1225,7 @@ func _setup_ui() -> void:
 
 	_section(vb, "SCENE")
 	_slider(vb, "model_yaw", "Model yaw", 0.0, 360.0, 0.5)
+	_slider(vb, "view_pan", "View pan (subject X)", -1.0, 1.0, 0.01)
 	_slider(vb, "overlay", "UE overlay opacity", 0.0, 1.0, 0.01)
 	_slider(vb, "zoff", "Depth nudge (m)", -0.5, 0.5, 0.005)
 
@@ -1244,6 +1378,7 @@ func _build_bs_panel(layer: CanvasLayer) -> void:
 	_bs_panel.anchor_top = 0.0; _bs_panel.anchor_bottom = 1.0
 	_bs_panel.offset_left = -_bs_width; _bs_panel.offset_right = 0.0
 	_bs_panel.visible = false
+	_bs_panel.clip_contents = true
 	layer.add_child(_bs_panel)
 	_build_bs_handle(layer)
 	_rebuild_bs_panel()
@@ -1253,7 +1388,7 @@ func _rebuild_bs_panel() -> void:
 	for c in _bs_panel.get_children(): c.queue_free()
 	_bs_rows.clear()
 	var scroll := ScrollContainer.new()
-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
 	_bs_panel.add_child(scroll)
 	var vb := VBoxContainer.new(); vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL; scroll.add_child(vb)
 	var present := 0
@@ -1270,10 +1405,13 @@ func _rebuild_bs_panel() -> void:
 		_bs_slider(vb, nm)
 
 func _bs_slider(parent: Control, sname: String) -> void:
-	var has := _bs_map.has(sname)
+	# eyeLook* are driven by eyeball bone rotation (the shapes were stripped), so they
+	# are "available" when the face eye bones resolved — not via _bs_map.
+	var is_gaze := EYE_LOOK.has(sname)
+	var has := _bs_map.has(sname) or (is_gaze and _eye_bone_l >= 0)
 	var row := HBoxContainer.new()
 	var lab := Label.new()
-	lab.text = sname + ("" if has else "  (n/a)")
+	lab.text = sname + ("  (gaze)" if (is_gaze and has) else ("" if has else "  (n/a)"))
 	lab.custom_minimum_size = Vector2(165, 0)
 	if not has: lab.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
 	row.add_child(lab)
@@ -1289,13 +1427,17 @@ func _bs_slider(parent: Control, sname: String) -> void:
 	row.add_child(spin)
 	parent.add_child(row)
 	if has:
-		sl.value_changed.connect(func(v): _set_blendshape(sname, v); spin.set_value_no_signal(v))
-		spin.value_changed.connect(func(v): _set_blendshape(sname, v); sl.set_value_no_signal(v))
+		var setter := (func(v): _set_eye_look(sname, v)) if is_gaze else (func(v): _set_blendshape(sname, v))
+		sl.value_changed.connect(func(v): setter.call(v); spin.set_value_no_signal(v))
+		spin.value_changed.connect(func(v): setter.call(v); sl.set_value_no_signal(v))
 	_bs_rows[sname] = {"slider": sl, "spin": spin}
 
 func _reset_all_shapes() -> void:
 	for nm in _bs_map.keys():
 		_set_blendshape(nm, 0.0)
+	for nm in EYE_LOOK.keys():
+		_bs_values[nm] = 0.0
+	_apply_eye_gaze()
 	for nm in _bs_rows.keys():
 		_bs_rows[nm]["slider"].set_value_no_signal(0.0)
 		_bs_rows[nm]["spin"].set_value_no_signal(0.0)
@@ -1617,6 +1759,7 @@ func _input(e: InputEvent) -> void:
 					p.overlay = 0.5 if p.overlay < 0.05 else 0.0; _apply_all()
 			KEY_P: _save_default_preset()
 			KEY_R: _reset_orbit()
+			KEY_ESCAPE: get_tree().quit()
 # Camera orbit/pan/zoom lives in _unhandled_input so it ONLY fires for events the
 # UI didn't already consume. Dragging a slider / button / panel is eaten by that
 # Control first, so it no longer also spins the character — rotation happens only
