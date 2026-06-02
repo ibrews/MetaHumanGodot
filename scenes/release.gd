@@ -148,6 +148,9 @@ var p := {
 	# eye gaze — single focal point in the eye-midpoint frame (meters):
 	# (0,0,0) = cross-eyed at the point between the eyes; +z = ahead, +x = subject-right, +y = up.
 	"eye_fx": 0.0, "eye_fy": 0.0, "eye_fz": 0.8, "eye_focus_abs": false,
+	# "alive eyes": look at the camera with naturalistic saccades + blinks (demo). When
+	# on, it overrides the manual focal point above.
+	"eye_alive": true,
 	# DEBUG: horizontal stretch of the UE overlay image (align-aid; remove later)
 	"overlay_stretch_x": 1.0,
 }
@@ -241,17 +244,26 @@ var _eye_bone_l := -1
 var _eye_bone_r := -1
 var _eye_fwd_axis := Vector3(0, 0, 1)   # bone-local "look" axis (sign calibrated via capture)
 var _eye_abs_point := Vector3.ZERO      # frozen world focal point used in absolute mode
+# "alive eyes" — gaze the camera with saccadic darts + natural blinks (demo)
+var _rng := RandomNumberGenerator.new()
+var _alive_clock := 0.0
+var _sacc_off := Vector2.ZERO           # current dart offset (camera screen-plane, metres)
+var _sacc_tgt := Vector2.ZERO
+var _sacc_next := 0.0
+var _blink_t := -1.0                     # >=0 while a blink is in progress
+var _blink_next := 1.5
 const ANIM_DURATION := 8.4
 const KEYPOSES := {
 	"neutral": {},
 	"smile": {"mouthSmileLeft": 0.5, "mouthSmileRight": 0.5, "cheekSquintLeft": 0.18, "cheekSquintRight": 0.18},
 	"surprise": {"jawOpen": 0.38, "browInnerUp": 0.65, "browOuterUpLeft": 0.5, "browOuterUpRight": 0.5, "eyeWideLeft": 0.55, "eyeWideRight": 0.55, "mouthFunnel": 0.18},
-	"blink": {"eyeBlinkLeft": 1.0, "eyeBlinkRight": 1.0},
 	"frown": {"mouthFrownLeft": 0.5, "mouthFrownRight": 0.5, "browDownLeft": 0.45, "browDownRight": 0.45, "mouthLowerDownLeft": 0.18, "mouthLowerDownRight": 0.18},
 }
+# NOTE: no "blink" keypose — blinking is owned by "alive eyes" (naturalistic + random),
+# so the emote anim must NOT drive eyeBlink or its per-frame track would cancel them.
 const KEY_TIMES := [
 	[0.0, "neutral"], [0.7, "smile"], [1.9, "neutral"], [2.5, "surprise"],
-	[3.5, "neutral"], [3.9, "blink"], [4.3, "frown"], [5.0, "neutral"], [5.7, "smile"], [8.2, "smile"],
+	[3.5, "neutral"], [4.3, "frown"], [5.0, "neutral"], [5.7, "smile"], [8.2, "smile"],
 ]
 # face-follow bind state (glue the separate face armature to the animated head bone)
 var _body_skeleton: Skeleton3D
@@ -290,6 +302,7 @@ func _ready() -> void:
 	# Skipped during headless capture, which drives a fixed --resolution offscreen.
 	if not OS.has_environment("RELEASE_CAPTURE"):
 		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
+	_rng.randomize()
 	_char_key = OS.get_environment("RELEASE_CHAR") if OS.has_environment("RELEASE_CHAR") else "guy"
 	if not PROFILES.has(_char_key):
 		_char_key = "guy"
@@ -533,10 +546,19 @@ func _process(delta: float) -> void:
 	else:
 		_update_orbit_camera()
 
-	# Eyes look at the focal point every frame (so absolute mode tracks a fixed world
-	# point as the head moves, and relative mode holds a constant head-relative gaze).
+	# Eyes: "alive" (gaze the camera with darts + blinks) overrides the manual focal
+	# point. Otherwise hold the focal point (absolute tracks a world point; relative
+	# holds a head-relative gaze).
 	if _face_eye_skel != null and _eye_bone_l >= 0:
-		_update_eye_focus()
+		# Alive interactively + during the animation demo, but NOT for static UE-match
+		# captures (those keep the manual focal so the alignment frame is stable).
+		var alive: bool = bool(p.get("eye_alive", true)) and _camera != null
+		if alive and OS.has_environment("RELEASE_CAPTURE") and not _anim_playing:
+			alive = false
+		if alive:
+			_update_alive_eyes(delta)
+		else:
+			_update_eye_focus()
 
 func _update_hero_camera() -> void:
 	# Ping-pong dolly from a wide full-body shot to a tight face, ALONG the current
@@ -1136,6 +1158,45 @@ func _update_eye_focus() -> void:
 	_aim_eye(_eye_bone_l, target)
 	_aim_eye(_eye_bone_r, target)
 
+# Naturalistic gaze: both eyes look at the camera with saccadic darts, micro-drift,
+# and periodic blinks. Offsets are in the camera's screen plane (metres), so darts are
+# small angular moves around the viewer regardless of distance.
+func _update_alive_eyes(delta: float) -> void:
+	_alive_clock += delta
+	var cam_pos := _camera.global_transform.origin
+	var rb := _camera.global_transform.basis
+	# saccade: jump to a fresh small offset every fixation, then ease in fast
+	if _alive_clock >= _sacc_next:
+		_sacc_tgt = Vector2(_rng.randfn(0.0, 0.018), _rng.randfn(0.0, 0.012))
+		_sacc_next = _alive_clock + _rng.randf_range(0.5, 2.0)
+	_sacc_off = _sacc_off.lerp(_sacc_tgt, clampf(delta * 20.0, 0.0, 1.0))
+	var drift := Vector2(sin(_alive_clock * 6.1) * 0.0016, cos(_alive_clock * 4.7) * 0.0013)
+	var focal := cam_pos + rb.x * (_sacc_off.x + drift.x) + rb.y * (_sacc_off.y + drift.y)
+	_aim_eye(_eye_bone_l, focal)
+	_aim_eye(_eye_bone_r, focal)
+	# blinks: quick close/open, then schedule the next 2.5–6 s out
+	if _blink_t < 0.0 and _alive_clock >= _blink_next:
+		_blink_t = 0.0
+	if _blink_t >= 0.0:
+		_blink_t += delta
+		var bl := 0.13
+		var v := 0.0
+		if _blink_t < bl * 0.35:
+			v = _blink_t / (bl * 0.35)
+		elif _blink_t < bl:
+			v = 1.0 - (_blink_t - bl * 0.35) / (bl * 0.65)
+		else:
+			_blink_t = -1.0
+			_blink_next = _alive_clock + _rng.randf_range(2.5, 6.0)
+			v = 0.0
+		_set_blink(v)
+
+func _set_blink(v: float) -> void:
+	for nm in ["eyeBlinkLeft", "eyeBlinkRight"]:
+		if _bs_map.has(nm):
+			for pair in _bs_map[nm]:
+				pair[0].set_blend_shape_value(pair[1], v)
+
 # Minimal-rotation look-at: rotate the eye bone so its look axis points at `focal_world`.
 func _aim_eye(idx: int, focal_world: Vector3) -> void:
 	if idx < 0 or _face_eye_skel == null: return
@@ -1337,8 +1398,18 @@ func _setup_ui() -> void:
 	_slider(vb, "eye_clearcoat", "Clearcoat (eye glow)", 0.0, 1.0, 0.01)
 
 	_section(vb, "EYE GAZE — focal point")
-	# Single look-at point in the eye-midpoint frame: (0,0,0)=cross-eyed at the point
-	# between the eyes; +Z ahead, +X subject-right, +Y up. Both eyes converge on it.
+	var alive_cb := CheckBox.new()
+	alive_cb.text = "Alive eyes — look at camera + blink"
+	alive_cb.button_pressed = bool(p.eye_alive)
+	var alive_toggle := func(on):
+		p.eye_alive = on
+		if not on: _set_blink(0.0); _blink_t = -1.0
+	alive_cb.toggled.connect(alive_toggle)
+	_style_checkbox(alive_cb); vb.add_child(alive_cb)
+	_refreshers.append(func(): alive_cb.set_pressed_no_signal(bool(p.eye_alive)))
+	# Manual focal point (used when Alive eyes is OFF). Single look-at point in the
+	# eye-midpoint frame: (0,0,0)=cross-eyed at the point between the eyes; +Z ahead,
+	# +X subject-right, +Y up. Both eyes converge on it.
 	_focus_slider(vb, "eye_fx", "Focal X (m)", -1.0, 1.0, 0.005)
 	_focus_slider(vb, "eye_fy", "Focal Y (m)", -1.0, 1.0, 0.005)
 	_focus_slider(vb, "eye_fz", "Focal Z / depth (m)", -0.5, 5.0, 0.01)
