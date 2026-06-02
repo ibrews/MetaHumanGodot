@@ -130,7 +130,8 @@ var p := {
 	"sss": 0.1, "skin_smooth": 0.62, "skin_nrm": 1.65, "skin_rough": 0.59,
 	"skin_spec": 0.33, "scatter": 2.15, "double_spec": false, "sss_depth": 6.0,
 	"micro": 0.0,
-	"skin_tint": Color(1, 1, 1),   # multiplies the albedo (HDR: >1 lightens) — recolour skin
+	"skin_tint": Color(1, 1, 1),   # multiplies the albedo — recolour skin (hue)
+	"skin_bright": 1.0,            # albedo brightness multiplier (>1 lightens past current)
 	# hair
 	"hair_col": Color(0.20, 0.13, 0.075), "hair_thresh": 0.07,
 	"hair_root": 0.42, "hair_rough": 0.72, "hair_spec": 0.12,
@@ -149,9 +150,11 @@ var p := {
 	# eye gaze — single focal point in the eye-midpoint frame (meters):
 	# (0,0,0) = cross-eyed at the point between the eyes; +z = ahead, +x = subject-right, +y = up.
 	"eye_fx": 0.0, "eye_fy": 0.0, "eye_fz": 0.8, "eye_focus_abs": false,
-	# "alive eyes": look at the camera with naturalistic saccades + blinks (demo). When
-	# on, it overrides the manual focal point above.
+	# "alive eyes": naturalistic saccades + blinks around the gaze target (demo).
 	"eye_alive": true,
+	# "look at camera": gaze target = camera; also live-populates the focal fields above
+	# with the camera position so unchecking lets you take over from there.
+	"eye_look_cam": true,
 	# DEBUG: UE overlay align-aids (remove later) — horizontal stretch + sideways scoot (px)
 	"overlay_stretch_x": 1.0, "overlay_off_x": 0.0,
 }
@@ -245,6 +248,7 @@ var _eye_bone_l := -1
 var _eye_bone_r := -1
 var _eye_fwd_axis := Vector3(0, 0, 1)   # bone-local "look" axis (sign calibrated via capture)
 var _eye_abs_point := Vector3.ZERO      # frozen world focal point used in absolute mode
+var _focus_ctrls := {}                   # key -> {spin, sl} for live focal-slider updates
 # "alive eyes" — gaze the camera with saccadic darts + natural blinks (demo)
 var _rng := RandomNumberGenerator.new()
 var _alive_clock := 0.0
@@ -551,15 +555,7 @@ func _process(delta: float) -> void:
 	# point. Otherwise hold the focal point (absolute tracks a world point; relative
 	# holds a head-relative gaze).
 	if _face_eye_skel != null and _eye_bone_l >= 0:
-		# Alive interactively + during the animation demo, but NOT for static UE-match
-		# captures (those keep the manual focal so the alignment frame is stable).
-		var alive: bool = bool(p.get("eye_alive", true)) and _camera != null
-		if alive and OS.has_environment("RELEASE_CAPTURE") and not _anim_playing:
-			alive = false
-		if alive:
-			_update_alive_eyes(delta)
-		else:
-			_update_eye_focus()
+		_update_eyes(delta)
 
 func _update_hero_camera() -> void:
 	# Ping-pong dolly from a wide full-body shot to a tight face, ALONG the current
@@ -1159,31 +1155,46 @@ func _update_eye_focus() -> void:
 	_aim_eye(_eye_bone_l, target)
 	_aim_eye(_eye_bone_r, target)
 
-# Naturalistic gaze: both eyes look at the camera with saccadic darts, micro-drift,
-# and periodic blinks. Offsets are in the camera's screen plane (metres), so darts are
-# small angular moves around the viewer regardless of distance.
-func _update_alive_eyes(delta: float) -> void:
+# Unified per-frame eye driver.
+#  - Target = camera (if "Look at camera") else the manual focal point.
+#  - "Look at camera" also writes the camera's position back into the manual focal
+#    fields (in the eye-midpoint frame) so the sliders track it; uncheck to take over
+#    starting from those values (e.g. nudge to "look slightly left of camera").
+#  - "Alive eyes" adds candid saccadic darts + blinks around whatever the target is.
+#  - Static UE-match captures (no anim) skip both, holding the manual focal for stability.
+func _update_eyes(delta: float) -> void:
+	if _face_eye_skel == null or _eye_bone_l < 0: return
+	var capture_static := OS.has_environment("RELEASE_CAPTURE") and not _anim_playing
+	var look_cam := bool(p.get("eye_look_cam", true)) and _camera != null and not capture_static
+	var target: Vector3
+	if look_cam:
+		target = _camera.global_transform.origin
+		_set_focal_from_world(target)   # keep the manual focal fields synced to the camera
+	else:
+		target = _focal_world()
+	if bool(p.get("eye_alive", true)) and _camera != null and not capture_static:
+		target += _alive_offset(delta)
+		_update_blink(delta)
+	_aim_eye(_eye_bone_l, target)
+	_aim_eye(_eye_bone_r, target)
+
+# Candid saccadic dart + micro-drift, returned as a world offset in the camera's
+# screen plane (so it reads as small natural eye movements around the target).
+func _alive_offset(delta: float) -> Vector3:
 	_alive_clock += delta
-	var cam_pos := _camera.global_transform.origin
-	var rb := _camera.global_transform.basis
-	# saccade: each fixation, sometimes hold brief eye contact (small offset near the
-	# camera), sometimes glance candidly AWAY (larger offset, biased down/sideways) so
-	# it isn't a constant stare.
 	if _alive_clock >= _sacc_next:
 		if _rng.randf() < 0.45:
-			# candid glance away from the lens (down-biased) for a beat
 			_sacc_tgt = Vector2(_rng.randf_range(-0.35, 0.35), _rng.randf_range(-0.32, 0.12))
 			_sacc_next = _alive_clock + _rng.randf_range(0.7, 1.8)
 		else:
-			# brief near-camera fixation (light eye contact) + micro-darts
 			_sacc_tgt = Vector2(_rng.randfn(0.0, 0.02), _rng.randfn(0.0, 0.014))
 			_sacc_next = _alive_clock + _rng.randf_range(0.4, 1.1)
 	_sacc_off = _sacc_off.lerp(_sacc_tgt, clampf(delta * 20.0, 0.0, 1.0))
 	var drift := Vector2(sin(_alive_clock * 6.1) * 0.0016, cos(_alive_clock * 4.7) * 0.0013)
-	var focal := cam_pos + rb.x * (_sacc_off.x + drift.x) + rb.y * (_sacc_off.y + drift.y)
-	_aim_eye(_eye_bone_l, focal)
-	_aim_eye(_eye_bone_r, focal)
-	# blinks: quick close/open, then schedule the next 2.5–6 s out
+	var rb := _camera.global_transform.basis
+	return rb.x * (_sacc_off.x + drift.x) + rb.y * (_sacc_off.y + drift.y)
+
+func _update_blink(delta: float) -> void:
 	if _blink_t < 0.0 and _alive_clock >= _blink_next:
 		_blink_t = 0.0
 	if _blink_t >= 0.0:
@@ -1199,6 +1210,17 @@ func _update_alive_eyes(delta: float) -> void:
 			_blink_next = _alive_clock + _rng.randf_range(2.5, 6.0)
 			v = 0.0
 		_set_blink(v)
+
+# Convert a WORLD point into the eye-midpoint frame and store it as the manual focal
+# (eye_fx/fy/fz), updating the focal sliders so they read the live value.
+func _set_focal_from_world(world: Vector3) -> void:
+	var fr: Array = _eye_gaze_frame()
+	var local: Vector3 = (fr[1] as Basis).inverse() * (world - (fr[0] as Vector3))
+	p.eye_fx = local.x; p.eye_fy = local.y; p.eye_fz = local.z
+	for key in ["eye_fx", "eye_fy", "eye_fz"]:
+		if _focus_ctrls.has(key):
+			_focus_ctrls[key]["spin"].set_value_no_signal(float(p[key]))
+			_focus_ctrls[key]["sl"].set_value_no_signal(float(p[key]))
 
 func _set_blink(v: float) -> void:
 	for nm in ["eyeBlinkLeft", "eyeBlinkRight"]:
@@ -1381,6 +1403,7 @@ func _setup_ui() -> void:
 
 	_section(vb, "SKIN (face + body)")
 	_color(vb, "skin_tint", "Skin colour (tint)")
+	_slider(vb, "skin_bright", "Skin lightness", 0.0, 2.5, 0.01)
 	_slider(vb, "sss", "Subsurface", 0.0, 1.0, 0.01)
 	_slider(vb, "scatter", "Scatter strength", 0.0, 3.0, 0.01)
 	_slider(vb, "skin_smooth", "Skin smoothness", 0.0, 4.0, 0.01)
@@ -1409,8 +1432,9 @@ func _setup_ui() -> void:
 	_slider(vb, "eye_clearcoat", "Clearcoat (eye glow)", 0.0, 1.0, 0.01)
 
 	_section(vb, "EYE GAZE — focal point")
+	# Alive eyes = candid saccadic darts + blinks around the gaze target.
 	var alive_cb := CheckBox.new()
-	alive_cb.text = "Alive eyes — look at camera + blink"
+	alive_cb.text = "Alive eyes (darts + blinks)"
 	alive_cb.button_pressed = bool(p.eye_alive)
 	var alive_toggle := func(on):
 		p.eye_alive = on
@@ -1418,9 +1442,18 @@ func _setup_ui() -> void:
 	alive_cb.toggled.connect(alive_toggle)
 	_style_checkbox(alive_cb); vb.add_child(alive_cb)
 	_refreshers.append(func(): alive_cb.set_pressed_no_signal(bool(p.eye_alive)))
-	# Manual focal point (used when Alive eyes is OFF). Single look-at point in the
-	# eye-midpoint frame: (0,0,0)=cross-eyed at the point between the eyes; +Z ahead,
-	# +X subject-right, +Y up. Both eyes converge on it.
+	# Look at camera = gaze target is the camera; also live-fills the focal fields below
+	# with the camera position. Uncheck to take over from those values (e.g. look just
+	# left of the lens).
+	var lookcam_cb := CheckBox.new()
+	lookcam_cb.text = "Look at camera (auto-fills focal below)"
+	lookcam_cb.button_pressed = bool(p.eye_look_cam)
+	lookcam_cb.toggled.connect(func(on): p.eye_look_cam = on)
+	_style_checkbox(lookcam_cb); vb.add_child(lookcam_cb)
+	_refreshers.append(func(): lookcam_cb.set_pressed_no_signal(bool(p.eye_look_cam)))
+	# Manual focal point — the gaze target when "Look at camera" is OFF. Single look-at
+	# point in the eye-midpoint frame: (0,0,0)=cross-eyed at the point between the eyes;
+	# +Z ahead/depth, +X subject-right, +Y up. Both eyes converge on it.
 	_focus_slider(vb, "eye_fx", "Focal X (m)", -1.0, 1.0, 0.005)
 	_focus_slider(vb, "eye_fy", "Focal Y (m)", -1.0, 1.0, 0.005)
 	_focus_slider(vb, "eye_fz", "Focal Z / depth (m)", -0.5, 5.0, 0.01)
@@ -1535,6 +1568,7 @@ func _focus_slider(parent: Control, key: String, label: String, lo: float, hi: f
 	sl.value_changed.connect(func(v): on_change.call(v); spin.set_value_no_signal(v))
 	spin.value_changed.connect(func(v): on_change.call(v); sl.set_value_no_signal(clampf(v, lo, hi)))
 	_refreshers.append(func(): spin.set_value_no_signal(float(p[key])); sl.set_value_no_signal(clampf(float(p[key]), lo, hi)))
+	_focus_ctrls[key] = {"spin": spin, "sl": sl}   # for live "look at camera" sync
 
 func _refresh_controls() -> void:
 	for r in _refreshers: r.call()
@@ -1737,7 +1771,9 @@ func _apply_all() -> void:
 		if _camera:
 			_catch.global_transform.origin = _camera.global_transform.origin + _camera.global_transform.basis.y * 0.12
 	for m in _skin_mats:
-		m.set_shader_parameter("albedo", p.skin_tint)
+		var b: float = float(p.get("skin_bright", 1.0))
+		var t: Color = p.skin_tint
+		m.set_shader_parameter("albedo", Color(t.r * b, t.g * b, t.b * b, 1.0))
 		m.set_shader_parameter("subsurface_scattering_strength", p.sss)
 		m.set_shader_parameter("scatter_strength", p.scatter)
 		m.set_shader_parameter("skin_smoothness", p.skin_smooth)
