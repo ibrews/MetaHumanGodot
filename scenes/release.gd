@@ -145,6 +145,11 @@ var p := {
 	"cap_pan": -0.176,   # capture-time centering
 	# DOF (applied to _cam_attrs)
 	"dof_focus": 1.3, "dof_blur": 0.0,
+	# eye gaze — single focal point in the eye-midpoint frame (meters):
+	# (0,0,0) = cross-eyed at the point between the eyes; +z = ahead, +x = subject-right, +y = up.
+	"eye_fx": 0.0, "eye_fy": 0.0, "eye_fz": 0.8, "eye_focus_abs": false,
+	# DEBUG: horizontal stretch of the UE overlay image (align-aid; remove later)
+	"overlay_stretch_x": 1.0,
 }
 
 var _char_key := "guy"
@@ -168,8 +173,8 @@ var _overlay_available := false
 var _panel: Control
 var _panel_handle: Panel
 var _panel_collapse_btn: Button
-var _panel_width := 360.0
-var _panel_prev_width := 360.0
+var _panel_width := 470.0
+var _panel_prev_width := 470.0
 var _panel_dragging := false
 var _bs_panel: Control
 var _bs_handle: Panel
@@ -223,23 +228,19 @@ var _follow_active := false      # face-follow runs only while the body idle pla
 var _face_anim_player: AnimationPlayer
 var _body_anim_player: AnimationPlayer
 
-# ---- eye gaze (item 3): the 8 eyeLook* ARKit shapes were stripped from the bake
-# (horror-eye fix), so drive gaze by rotating the FACIAL_L_Eye / FACIAL_R_Eye bones
-# in the face skeleton instead. eyeBlink/Squint/Wide remain real blendshapes.
-const EYE_LOOK := {
-	"eyeLookUpLeft": ["L", "pitch", 1.0], "eyeLookDownLeft": ["L", "pitch", -1.0],
-	"eyeLookInLeft": ["L", "yaw", 1.0],   "eyeLookOutLeft": ["L", "yaw", -1.0],
-	"eyeLookUpRight": ["R", "pitch", 1.0], "eyeLookDownRight": ["R", "pitch", -1.0],
-	"eyeLookInRight": ["R", "yaw", -1.0],  "eyeLookOutRight": ["R", "yaw", 1.0],
-}
-const EYE_GAZE_MAX := deg_to_rad(28.0)   # full slider (1.0) = 28° eyeball rotation
-var _eye_yaw_axis := Vector3(0, 1, 0)     # bone-local axis for left/right gaze (calibrated: convergence correct)
-var _eye_pitch_axis := Vector3(-1, 0, 0)  # bone-local axis for up/down gaze (calibrated: +X looked DOWN, so negate)
+# ---- eye gaze (item 3, redesigned): both eyes LOOK-AT a single focal point. The 8
+# ARKit eyeLook* shapes were stripped (horror-eye fix), so we aim the
+# FACIAL_L_Eye/FACIAL_R_Eye bones via a minimal-rotation look-at. The focal point is
+# given in an eye-midpoint frame (see p.eye_fx/fy/fz): (0,0,0) = the point between the
+# eyes (cross-eyed); +z ahead. Relative mode tracks the head; absolute freezes a world point.
+# The 8 ARKit eyeLook* names — still recognised so they never appear as dead sliders.
+const EYE_LOOK_NAMES := ["eyeLookUpLeft","eyeLookDownLeft","eyeLookInLeft","eyeLookOutLeft",
+	"eyeLookUpRight","eyeLookDownRight","eyeLookInRight","eyeLookOutRight"]
 var _face_eye_skel: Skeleton3D
 var _eye_bone_l := -1
 var _eye_bone_r := -1
-var _eye_rest_l := Quaternion.IDENTITY
-var _eye_rest_r := Quaternion.IDENTITY
+var _eye_fwd_axis := Vector3(0, 0, 1)   # bone-local "look" axis (sign calibrated via capture)
+var _eye_abs_point := Vector3.ZERO      # frozen world focal point used in absolute mode
 const ANIM_DURATION := 8.4
 const KEYPOSES := {
 	"neutral": {},
@@ -309,9 +310,13 @@ func _ready() -> void:
 		for tok in OS.get_environment("RELEASE_BS").split(","):
 			var kv := tok.split("=")
 			if kv.size() == 2:
-				var bsn := kv[0].strip_edges()
-				if EYE_LOOK.has(bsn): _set_eye_look(bsn, float(kv[1]))
-				else: _set_blendshape(bsn, float(kv[1]))
+				_set_blendshape(kv[0].strip_edges(), float(kv[1]))
+	# QA hook: RELEASE_FOCAL="x,y,z" sets the eye focal point (eye-midpoint frame).
+	if OS.has_environment("RELEASE_FOCAL"):
+		var fc := OS.get_environment("RELEASE_FOCAL").split(",")
+		if fc.size() == 3:
+			p.eye_fx = float(fc[0]); p.eye_fy = float(fc[1]); p.eye_fz = float(fc[2])
+			_refreeze_abs_point(); _update_eye_focus()
 	# Headless QA hook: RELEASE_TOGGLE=1 exercises the live character switch.
 	if OS.has_environment("RELEASE_TOGGLE"):
 		_switch_character()
@@ -527,6 +532,11 @@ func _process(delta: float) -> void:
 		_update_hero_camera()
 	else:
 		_update_orbit_camera()
+
+	# Eyes look at the focal point every frame (so absolute mode tracks a fixed world
+	# point as the head moves, and relative mode holds a constant head-relative gaze).
+	if _face_eye_skel != null and _eye_bone_l >= 0:
+		_update_eye_focus()
 
 func _update_hero_camera() -> void:
 	# Ping-pong dolly from a wide full-body shot to a tight face, ALONG the current
@@ -823,7 +833,6 @@ func _reapply_blendshapes() -> void:
 		if v == 0.0: continue
 		for pair in _bs_map[sname]:
 			pair[0].set_blend_shape_value(pair[1], v)
-	_apply_eye_gaze()   # re-drive eyeLook* gaze (bone-based, not in _bs_map)
 
 # ---- material wiring (profile-driven) ---------------------------------------
 func _wire_materials(root: Node) -> void:
@@ -1071,7 +1080,7 @@ func _set_blendshape(sname: String, v: float) -> void:
 		var mi: MeshInstance3D = pair[0]
 		mi.set_blend_shape_value(pair[1], v)
 
-# ---- eye gaze (bone-driven) -------------------------------------------------
+# ---- eye gaze (look-at a single focal point) --------------------------------
 func _resolve_eye_bones(root: Node) -> void:
 	_face_eye_skel = null; _eye_bone_l = -1; _eye_bone_r = -1
 	var stack: Array[Node] = [root]
@@ -1083,38 +1092,77 @@ func _resolve_eye_bones(root: Node) -> void:
 			var ri := s.find_bone("FACIAL_R_Eye")
 			if li >= 0 and ri >= 0:
 				_face_eye_skel = s; _eye_bone_l = li; _eye_bone_r = ri
-				_eye_rest_l = s.get_bone_pose_rotation(li)
-				_eye_rest_r = s.get_bone_pose_rotation(ri)
 				return
 		for c in n.get_children(): stack.append(c)
 
-func _set_eye_look(sname: String, v: float) -> void:
-	_bs_values[sname] = v
-	_apply_eye_gaze()
+# World position + rest orientation (world) of an eye bone, after any face-follow.
+func _eye_world_pos(idx: int) -> Vector3:
+	return _face_eye_skel.global_transform * _face_eye_skel.get_bone_global_pose(idx).origin
+func _eye_rest_basis_world(idx: int) -> Basis:
+	return (_face_eye_skel.global_transform.basis * _face_eye_skel.get_bone_global_rest(idx).basis).orthonormalized()
 
-func _apply_eye_gaze() -> void:
-	if _face_eye_skel == null: return
-	var ly := 0.0; var lp := 0.0; var ry := 0.0; var rp := 0.0
-	for nm in EYE_LOOK.keys():
-		var v: float = float(_bs_values.get(nm, 0.0))
-		if v == 0.0: continue
-		var spec: Array = EYE_LOOK[nm]
-		var amt: float = v * float(spec[2])
-		if spec[0] == "L":
-			if spec[1] == "yaw": ly += amt
-			else: lp += amt
-		else:
-			if spec[1] == "yaw": ry += amt
-			else: rp += amt
-	_apply_one_eye(_eye_bone_l, _eye_rest_l, ly, lp)
-	_apply_one_eye(_eye_bone_r, _eye_rest_r, ry, rp)
+# Build the eye-midpoint frame: origin between the eyes, +z = mean rest look dir,
+# +x = subject-right, +y = up. The user's focal vector is expressed in this frame.
+func _eye_gaze_frame() -> Array:  # [origin, basis]
+	var lp := _eye_world_pos(_eye_bone_l)
+	var rp := _eye_world_pos(_eye_bone_r)
+	var origin := (lp + rp) * 0.5
+	var fwd := ((_eye_rest_basis_world(_eye_bone_l) * _eye_fwd_axis) \
+			+ (_eye_rest_basis_world(_eye_bone_r) * _eye_fwd_axis)).normalized()
+	if fwd.length() < 0.5: fwd = Vector3(0, 0, 1)
+	var up := Vector3.UP
+	var right := fwd.cross(up).normalized()
+	if right.length() < 0.5: right = Vector3(1, 0, 0)
+	up = right.cross(fwd).normalized()
+	return [origin, Basis(right, up, fwd)]
 
-func _apply_one_eye(idx: int, rest: Quaternion, yaw: float, pitch: float) -> void:
+# Current focal point in world space (relative = tracks head; absolute = frozen world point).
+func _focal_world() -> Vector3:
+	var fr: Array = _eye_gaze_frame()
+	if bool(p.get("eye_focus_abs", false)):
+		return _eye_abs_point
+	var origin: Vector3 = fr[0]; var basis: Basis = fr[1]
+	return origin + basis * Vector3(p.eye_fx, p.eye_fy, p.eye_fz)
+
+# Recompute & freeze the absolute world point from the current frame + focal vector.
+func _refreeze_abs_point() -> void:
+	if _face_eye_skel == null or _eye_bone_l < 0: return
+	var fr: Array = _eye_gaze_frame()
+	_eye_abs_point = (fr[0] as Vector3) + (fr[1] as Basis) * Vector3(p.eye_fx, p.eye_fy, p.eye_fz)
+
+func _update_eye_focus() -> void:
+	if _face_eye_skel == null or _eye_bone_l < 0: return
+	var target := _focal_world()
+	_aim_eye(_eye_bone_l, target)
+	_aim_eye(_eye_bone_r, target)
+
+# Minimal-rotation look-at: rotate the eye bone so its look axis points at `focal_world`.
+func _aim_eye(idx: int, focal_world: Vector3) -> void:
 	if idx < 0 or _face_eye_skel == null: return
-	var q: Quaternion = rest \
-		* Quaternion(_eye_yaw_axis, yaw * EYE_GAZE_MAX) \
-		* Quaternion(_eye_pitch_axis, pitch * EYE_GAZE_MAX)
-	_face_eye_skel.set_bone_pose_rotation(idx, q)
+	var eye_pos := _eye_world_pos(idx)
+	var desired := (focal_world - eye_pos)
+	if desired.length() < 1e-5: return
+	desired = desired.normalized()
+	var rest_basis_w := _eye_rest_basis_world(idx)
+	var rest_fwd := (rest_basis_w * _eye_fwd_axis).normalized()
+	var q := _quat_between(rest_fwd, desired)
+	var target_basis_w := Basis(q) * rest_basis_w
+	# world -> skeleton-space global pose basis -> bone-local (relative to parent)
+	var target_in_skel := _face_eye_skel.global_transform.basis.inverse() * target_basis_w
+	var parent := _face_eye_skel.get_bone_parent(idx)
+	var parent_basis := (_face_eye_skel.get_bone_global_pose(parent).basis if parent >= 0 else Basis.IDENTITY)
+	var local_basis := parent_basis.inverse() * target_in_skel
+	_face_eye_skel.set_bone_pose_rotation(idx, local_basis.orthonormalized().get_rotation_quaternion())
+
+func _quat_between(a: Vector3, b: Vector3) -> Quaternion:
+	a = a.normalized(); b = b.normalized()
+	var d := clampf(a.dot(b), -1.0, 1.0)
+	if d > 0.99999: return Quaternion.IDENTITY
+	if d < -0.99999:
+		var ax := a.cross(Vector3(1, 0, 0))
+		if ax.length() < 1e-4: ax = a.cross(Vector3(0, 1, 0))
+		return Quaternion(ax.normalized(), PI)
+	return Quaternion(a.cross(b).normalized(), acos(d))
 
 func _world_aabb(node: Node) -> AABB:
 	var aabb := AABB(); var first := true
@@ -1211,22 +1259,28 @@ func _setup_ui() -> void:
 	_orbit_slider(vb, "Orbit pitch",  func(v): _orbit_pitch = clampf(v, -89.0, 89.0),    func(): return _orbit_pitch,  -89.0,  89.0, 0.5)
 	_orbit_slider(vb, "Orbit dist",   func(v): _orbit_dist = v,                           func(): return _orbit_dist,    0.1,   6.0, 0.02)
 	_orbit_slider(vb, "FOV",          func(v): _orbit_fov = v; if _camera: _camera.fov=v, func(): return _orbit_fov,    10.0,  90.0, 1.0)
+	# Look-at target (the point the camera orbits) as explicit numbers — formerly only
+	# reachable by RMB-pan. Together with yaw/pitch/dist/FOV this fully specifies the camera.
+	_orbit_slider(vb, "Target X (m)", func(v): _orbit_target.x = v, func(): return _orbit_target.x, -2.0, 2.0, 0.005)
+	_orbit_slider(vb, "Target Y (m)", func(v): _orbit_target.y = v, func(): return _orbit_target.y,  0.0, 2.5, 0.005)
+	_orbit_slider(vb, "Target Z (m)", func(v): _orbit_target.z = v, func(): return _orbit_target.z, -2.0, 2.0, 0.005)
 	_slider(vb, "dof_focus", "DOF focus (m)", 0.1, 8.0, 0.05)
 	_slider(vb, "dof_blur",  "DOF blur",      0.0, 0.5, 0.005)
 	var tt_cb := CheckBox.new(); tt_cb.text = "Turntable (rotate character)"
 	tt_cb.toggled.connect(func(on): _turntable = on)
-	vb.add_child(tt_cb)
+	_style_checkbox(tt_cb); vb.add_child(tt_cb)
 	var hero_cb := CheckBox.new(); hero_cb.text = "Hero camera (ping-pong push-in)"
 	hero_cb.toggled.connect(func(on): _set_hero_cam(on))
-	vb.add_child(hero_cb)
+	_style_checkbox(hero_cb); vb.add_child(hero_cb)
 	var anim_cb := CheckBox.new(); anim_cb.text = "Play face animation (emote)"
 	anim_cb.toggled.connect(func(on): _set_anim_playing(on))
-	vb.add_child(anim_cb)
+	_style_checkbox(anim_cb); vb.add_child(anim_cb)
 
 	_section(vb, "SCENE")
 	_slider(vb, "model_yaw", "Model yaw", 0.0, 360.0, 0.5)
 	_slider(vb, "view_pan", "View pan (subject X)", -1.0, 1.0, 0.01)
 	_slider(vb, "overlay", "UE overlay opacity", 0.0, 1.0, 0.01)
+	_slider(vb, "overlay_stretch_x", "Overlay stretch X (debug)", 0.9, 1.1, 0.001)
 	_slider(vb, "zoff", "Depth nudge (m)", -0.5, 0.5, 0.005)
 
 	_section(vb, "LIGHTING — energy")
@@ -1281,6 +1335,23 @@ func _setup_ui() -> void:
 	_slider(vb, "eye_rough", "Roughness", 0.0, 0.5, 0.005)
 	_slider(vb, "eye_spec", "Specular", 0.0, 1.0, 0.01)
 	_slider(vb, "eye_clearcoat", "Clearcoat (eye glow)", 0.0, 1.0, 0.01)
+
+	_section(vb, "EYE GAZE — focal point")
+	# Single look-at point in the eye-midpoint frame: (0,0,0)=cross-eyed at the point
+	# between the eyes; +Z ahead, +X subject-right, +Y up. Both eyes converge on it.
+	_focus_slider(vb, "eye_fx", "Focal X (m)", -1.0, 1.0, 0.005)
+	_focus_slider(vb, "eye_fy", "Focal Y (m)", -1.0, 1.0, 0.005)
+	_focus_slider(vb, "eye_fz", "Focal Z / depth (m)", -0.5, 5.0, 0.01)
+	var abs_cb := CheckBox.new()
+	abs_cb.text = "Absolute (world-locked gaze)"
+	abs_cb.button_pressed = bool(p.eye_focus_abs)
+	var abs_toggle := func(on):
+		p.eye_focus_abs = on
+		if on: _refreeze_abs_point()
+		_update_eye_focus()
+	abs_cb.toggled.connect(abs_toggle)
+	_style_checkbox(abs_cb); vb.add_child(abs_cb)
+	_refreshers.append(func(): abs_cb.set_pressed_no_signal(bool(p.eye_focus_abs)))
 
 	_section(vb, "PRESETS")
 	var btn := Button.new(); btn.text = "Save (overwrite default)"
@@ -1344,8 +1415,44 @@ func _color(parent: Control, key: String, label: String) -> void:
 func _toggle(parent: Control, key: String, label: String) -> void:
 	var cb := CheckBox.new(); cb.text = label; cb.button_pressed = bool(p[key])
 	cb.toggled.connect(func(on): p[key] = on; _apply_all())
-	parent.add_child(cb)
+	_style_checkbox(cb); parent.add_child(cb)
 	_refreshers.append(func(): cb.set_pressed_no_signal(bool(p[key])))
+
+# Outline + subtle fill behind checkboxes so they read clearly against the 3D view.
+func _style_checkbox(cb: CheckBox) -> void:
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.12, 0.13, 0.17, 0.55)
+	sb.border_color = Color(0.55, 0.60, 0.72, 0.9)
+	sb.set_border_width_all(1)
+	sb.set_corner_radius_all(3)
+	sb.content_margin_left = 6; sb.content_margin_right = 6
+	sb.content_margin_top = 3; sb.content_margin_bottom = 3
+	for st in ["normal", "hover", "pressed", "focus", "disabled"]:
+		cb.add_theme_stylebox_override(st, sb)
+
+# Eye focal-point slider: like _slider but re-aims the eyes (and re-freezes the
+# absolute world point) on change instead of calling _apply_all.
+func _focus_slider(parent: Control, key: String, label: String, lo: float, hi: float, step: float) -> void:
+	var row := VBoxContainer.new()
+	var top := HBoxContainer.new()
+	var lab := Label.new(); lab.text = label; lab.custom_minimum_size = Vector2(175, 0)
+	top.add_child(lab)
+	var spin := SpinBox.new()
+	spin.min_value = lo; spin.max_value = hi; spin.step = step
+	spin.allow_greater = true; spin.allow_lesser = true
+	spin.custom_minimum_size = Vector2(120, 0); spin.value = float(p[key])
+	top.add_child(spin); row.add_child(top)
+	var sl := HSlider.new()
+	sl.min_value = lo; sl.max_value = hi; sl.step = step
+	sl.value = clampf(float(p[key]), lo, hi)
+	sl.custom_minimum_size = Vector2(300, 16); row.add_child(sl); parent.add_child(row)
+	var on_change := func(v):
+		p[key] = v
+		if bool(p.eye_focus_abs): _refreeze_abs_point()
+		_update_eye_focus()
+	sl.value_changed.connect(func(v): on_change.call(v); spin.set_value_no_signal(v))
+	spin.value_changed.connect(func(v): on_change.call(v); sl.set_value_no_signal(clampf(v, lo, hi)))
+	_refreshers.append(func(): spin.set_value_no_signal(float(p[key])); sl.set_value_no_signal(clampf(float(p[key]), lo, hi)))
 
 func _refresh_controls() -> void:
 	for r in _refreshers: r.call()
@@ -1405,13 +1512,14 @@ func _rebuild_bs_panel() -> void:
 		_bs_slider(vb, nm)
 
 func _bs_slider(parent: Control, sname: String) -> void:
-	# eyeLook* are driven by eyeball bone rotation (the shapes were stripped), so they
-	# are "available" when the face eye bones resolved — not via _bs_map.
-	var is_gaze := EYE_LOOK.has(sname)
-	var has := _bs_map.has(sname) or (is_gaze and _eye_bone_l >= 0)
+	# eyeLook* are now driven by the single Eye Focal Point (in the main panel), so they
+	# get no row here.
+	if sname in EYE_LOOK_NAMES:
+		return
+	var has := _bs_map.has(sname)
 	var row := HBoxContainer.new()
 	var lab := Label.new()
-	lab.text = sname + ("  (gaze)" if (is_gaze and has) else ("" if has else "  (n/a)"))
+	lab.text = sname + ("" if has else "  (n/a)")
 	lab.custom_minimum_size = Vector2(165, 0)
 	if not has: lab.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5))
 	row.add_child(lab)
@@ -1427,17 +1535,13 @@ func _bs_slider(parent: Control, sname: String) -> void:
 	row.add_child(spin)
 	parent.add_child(row)
 	if has:
-		var setter := (func(v): _set_eye_look(sname, v)) if is_gaze else (func(v): _set_blendshape(sname, v))
-		sl.value_changed.connect(func(v): setter.call(v); spin.set_value_no_signal(v))
-		spin.value_changed.connect(func(v): setter.call(v); sl.set_value_no_signal(v))
+		sl.value_changed.connect(func(v): _set_blendshape(sname, v); spin.set_value_no_signal(v))
+		spin.value_changed.connect(func(v): _set_blendshape(sname, v); sl.set_value_no_signal(v))
 	_bs_rows[sname] = {"slider": sl, "spin": spin}
 
 func _reset_all_shapes() -> void:
 	for nm in _bs_map.keys():
 		_set_blendshape(nm, 0.0)
-	for nm in EYE_LOOK.keys():
-		_bs_values[nm] = 0.0
-	_apply_eye_gaze()
 	for nm in _bs_rows.keys():
 		_bs_rows[nm]["slider"].set_value_no_signal(0.0)
 		_bs_rows[nm]["spin"].set_value_no_signal(0.0)
@@ -1483,7 +1587,7 @@ func _toggle_left_collapse() -> void:
 		_panel_prev_width = _panel_width; _set_left_width(0.0)
 		if _panel_collapse_btn: _panel_collapse_btn.text = "››"
 	else:
-		_set_left_width(_panel_prev_width if _panel_prev_width > 40.0 else 360.0)
+		_set_left_width(_panel_prev_width if _panel_prev_width > 40.0 else 470.0)
 		if _panel_collapse_btn: _panel_collapse_btn.text = "‹‹"
 
 func _build_bs_handle(layer: CanvasLayer) -> void:
@@ -1579,7 +1683,14 @@ func _apply_all() -> void:
 		m.set_shader_parameter("specular_val", p.eye_spec)
 		m.set_shader_parameter("clearcoat_val", p.eye_clearcoat)
 	if _character: _character.rotation.y = deg_to_rad(p.model_yaw)
-	if _overlay: _overlay.modulate = Color(1, 1, 1, p.overlay)
+	if _overlay:
+		_overlay.modulate = Color(1, 1, 1, p.overlay)
+		# DEBUG overlay horizontal stretch: scale about the screen center so the UE
+		# reference image can be matched to the (slightly narrower) Godot render.
+		var sx: float = float(p.get("overlay_stretch_x", 1.0))
+		var vp := get_viewport().get_visible_rect().size
+		_overlay.pivot_offset = vp * 0.5
+		_overlay.scale = Vector2(sx, 1.0)
 	if _cam_attrs and not OS.has_environment("RELEASE_CAPTURE"):
 		var blur: float = float(p.get("dof_blur", 0.0))
 		var enabled: bool = blur > 0.001
@@ -1605,6 +1716,14 @@ func _serialize() -> Dictionary:
 			var c: Color = p[k]; out[k] = [c.r, c.g, c.b]
 		else:
 			out[k] = p[k]
+	# Camera/orbit state lives outside p — persist it so alignment saves with the preset.
+	out["cam_yaw"] = _orbit_yaw
+	out["cam_pitch"] = _orbit_pitch
+	out["cam_dist"] = _orbit_dist
+	out["cam_fov"] = _orbit_fov
+	out["cam_tx"] = _orbit_target.x
+	out["cam_ty"] = _orbit_target.y
+	out["cam_tz"] = _orbit_target.z
 	return out
 
 func _write_json(path: String) -> void:
@@ -1649,6 +1768,17 @@ func _load_preset_file(path: String) -> void:
 			p[k] = Color(data[k][0], data[k][1], data[k][2])
 		else:
 			p[k] = data[k]
+	# Restore camera/orbit (only if the preset carries it — older presets won't).
+	if data.has("cam_yaw"):   _orbit_yaw = float(data["cam_yaw"])
+	if data.has("cam_pitch"): _orbit_pitch = float(data["cam_pitch"])
+	if data.has("cam_dist"):  _orbit_dist = float(data["cam_dist"])
+	if data.has("cam_fov"):   _orbit_fov = float(data["cam_fov"])
+	if data.has("cam_tx"):    _orbit_target.x = float(data["cam_tx"])
+	if data.has("cam_ty"):    _orbit_target.y = float(data["cam_ty"])
+	if data.has("cam_tz"):    _orbit_target.z = float(data["cam_tz"])
+	if _camera and not OS.has_environment("RELEASE_CAPTURE"):
+		_camera.fov = _orbit_fov; _update_orbit_camera()
+	_refreeze_abs_point()
 	_set_status("loaded <- " + rp.get_file())
 
 func _load_selected_preset() -> void:
