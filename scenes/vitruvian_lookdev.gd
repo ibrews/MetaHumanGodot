@@ -203,33 +203,95 @@ func _load_and_wire() -> bool:
 	inst.name = "Character"
 	add_child(inst)
 
-	var mi: MeshInstance3D = _first_mesh(inst)
-	if mi == null:
-		return false
-	print("[vit] mesh '%s' surfaces=%d" % [mi.name, mi.mesh.get_surface_count()])
-
-	# Surface 0 = VitruvianSkin (face). Wire MatMADNESS skin shader by INDEX.
+	var meshes: Array[MeshInstance3D] = []
+	_collect_meshes(inst, meshes)
 	skin_mat = _make_skin()
-	mi.set_surface_override_material(0, skin_mat)
-
-	# Surface 1 = eyes/mouth/other — neutral material so empty regions don't glow.
-	if mi.mesh.get_surface_count() > 1:
-		var other: StandardMaterial3D = StandardMaterial3D.new()
-		other.albedo_color = Color(0.18, 0.16, 0.15)
-		other.roughness = 0.45
-		other.metallic = 0.0
-		mi.set_surface_override_material(1, other)
+	for mi in meshes:
+		var mesh: Mesh = mi.mesh
+		print("[vit] mesh '%s' surfaces=%d" % [mi.name, mesh.get_surface_count()])
+		# Wire by surface MATERIAL NAME (probe-confirmed), never trust index order.
+		for s in range(mesh.get_surface_count()):
+			var m: Material = mesh.surface_get_material(s)
+			var nm: String = m.resource_name if m else ""
+			match nm:
+				"VitSkin":   mi.set_surface_override_material(s, skin_mat)
+				"VitSclera": mi.set_surface_override_material(s, _make_sclera())
+				"VitIris":   mi.set_surface_override_material(s, _make_iris())
+				"VitMouth":  mi.set_surface_override_material(s, _make_mouth())
+				"VitPupil":  mi.set_surface_override_material(s, _make_pupil())
+				"VitBrows":  mi.set_surface_override_material(s, _make_brows())
+				_:           pass
 	return true
 
 
-func _first_mesh(node: Node) -> MeshInstance3D:
+func _collect_meshes(node: Node, out: Array[MeshInstance3D]) -> void:
 	if node is MeshInstance3D and (node as MeshInstance3D).mesh != null:
-		return node
+		out.append(node)
 	for c in node.get_children():
-		var r: MeshInstance3D = _first_mesh(c)
-		if r != null:
-			return r
-	return null
+		_collect_meshes(c, out)
+
+
+func _tex(p: String) -> Texture2D:
+	return load(p) as Texture2D if ResourceLoader.exists(p) else null
+
+
+func _make_sclera() -> StandardMaterial3D:
+	# White of the eye (+ cornea shell, same UDIM tile). Wet glossy via clearcoat.
+	var m: StandardMaterial3D = StandardMaterial3D.new()
+	m.albedo_texture = _tex("res://vit_sclera.png")
+	m.albedo_color = Color(1, 1, 1)
+	m.roughness = 0.4
+	m.metallic = 0.0
+	m.metallic_specular = 0.45
+	m.clearcoat_enabled = true
+	m.clearcoat = 0.35
+	m.clearcoat_roughness = 0.08
+	m.cull_mode = BaseMaterial3D.CULL_DISABLED
+	return m
+
+
+func _make_iris() -> StandardMaterial3D:
+	# Keep gloss modest so the iris texture reads instead of mirroring the rim.
+	var m: StandardMaterial3D = StandardMaterial3D.new()
+	m.albedo_texture = _tex("res://vit_iris.png")
+	m.albedo_color = Color(1, 1, 1)
+	m.roughness = 0.35
+	m.metallic = 0.0
+	m.metallic_specular = 0.5
+	m.clearcoat_enabled = true
+	m.clearcoat = 0.4
+	m.clearcoat_roughness = 0.08
+	m.cull_mode = BaseMaterial3D.CULL_DISABLED
+	return m
+
+
+func _make_pupil() -> StandardMaterial3D:
+	var m: StandardMaterial3D = StandardMaterial3D.new()
+	m.albedo_color = Color(0.02, 0.02, 0.025)
+	m.roughness = 0.12
+	m.metallic = 0.0
+	m.metallic_specular = 0.7
+	m.cull_mode = BaseMaterial3D.CULL_DISABLED
+	return m
+
+
+func _make_mouth() -> StandardMaterial3D:
+	var m: StandardMaterial3D = StandardMaterial3D.new()
+	m.albedo_texture = _tex("res://vit_mouth.png")
+	m.albedo_color = Color(0.85, 0.78, 0.76)
+	m.roughness = 0.42
+	m.metallic = 0.0
+	return m
+
+
+func _make_brows() -> StandardMaterial3D:
+	# No alpha atlas shipped → opaque dark-brown strips (spike-grade groom).
+	var m: StandardMaterial3D = StandardMaterial3D.new()
+	m.albedo_color = Color(0.085, 0.060, 0.042)
+	m.roughness = 0.68
+	m.metallic = 0.0
+	m.cull_mode = BaseMaterial3D.CULL_DISABLED
+	return m
 
 
 func _make_skin() -> ShaderMaterial:
