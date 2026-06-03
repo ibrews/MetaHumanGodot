@@ -13,6 +13,10 @@ uniform sampler2D sclera_normal : hint_normal, filter_linear_mipmap;
 uniform float iris_radius : hint_range(0.05, 0.5) = 0.27;
 uniform float blend_softness : hint_range(0.0, 0.15) = 0.025;
 uniform float iris_scale : hint_range(0.5, 4.0) = 1.0;
+// Iris/pupil UV shift — used to FAKE eye gaze on a static (boneless) eyeball, e.g. the
+// MH_Explainer face which ships no FACIAL_*_Eye bones. The driver shifts the iris disc
+// within the sclera so the eye appears to look around. (0,0) = dead ahead.
+uniform vec2 iris_offset = vec2(0.0, 0.0);
 uniform float roughness_val : hint_range(0.0, 1.0) = 0.03;
 uniform float specular_val : hint_range(0.0, 1.0) = 1.0;
 uniform float clearcoat_val : hint_range(0.0, 1.0) = 1.0;
@@ -21,7 +25,8 @@ uniform float normal_strength : hint_range(0.0, 2.0) = 0.6;
 uniform float sclera_tint : hint_range(0.0, 1.0) = 1.0;  // 1 = full veins, lower = whiter
 
 void fragment() {
-	vec2 ctr = UV - vec2(0.5);
+	// iris_offset shifts the iris/pupil center (fake gaze for boneless eyes).
+	vec2 ctr = UV - vec2(0.5) - iris_offset;
 	float dist = length(ctr);
 
 	// Iris disc, centered in UV (optionally zoomed).

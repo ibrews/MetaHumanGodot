@@ -40,19 +40,36 @@ const PROFILES := {
 	"her": {
 		"label": "Her — MH_Explainer",
 		"glb": "res://character_explainer.glb",
-		# Wire by SURFACE INDEX, not material name. The MetaHuman face material
-		# names are misleading leftovers from the UE bake: surface 0 is named
-		# "..Teeth_Baked.." but is actually the MAIN face skin geometry (24K verts),
-		# while the tiny "..Skin_Baked.." surface 7 is a 276-vert cap. Her face has
-		# the IDENTICAL 9-surface layout as the guy, so the guy's verified map
-		# applies unchanged. (Name-based wiring left surface 0 on its baked teeth
-		# material → the whole face rendered flat gray.)
+		# Wire by SURFACE INDEX, not material name (the MetaHuman bake material names
+		# are misleading: surface 0 is "..Teeth_Baked.." but is the MAIN face skin,
+		# 24K verts). Map VERIFIED by scenes/probe_explainer.gd against the shipped GLB.
+		# HER eye-surface order DIFFERS from the guy's (NOT identical, despite the
+		# earlier assumption) — her real left eyeball is surf 2, right eyeball surf 3,
+		# the corneal EyeShell surf 4, and the eyelash mesh surf 8:
+		#   0 MI_Teeth_Baked = face skin (24414 v)   7 Face_Skin cap (276 v)
+		#   1 M_Hide_0       = mouth: teeth+tongue+gums (4613 v)
+		#   2 MI_EyeL_Baked  = LEFT eyeball   3 MI_EyeR_Baked = RIGHT eyeball
+		#   4 EyeShell  5 LacrimalFluid  6 M_Hide_1   (hidden)
+		#   8 MI_Face_EyelashesHiLODs = eyelashes (now shown via the lash atlas)
 		"face_mode": "index",
 		"face_mesh_name": "Face",
-		"face_index_map": {0: "skin", 1: "teeth", 2: "hide", 3: "eyeR", 4: "eyeL",
-			5: "hide", 6: "hide", 7: "skin", 8: "hide"},
-		"head_bc": "exp_head_bc.png", "head_n": "exp_head_n.png",
+		"face_index_map": {0: "skin", 1: "teeth", 2: "eyeL", 3: "eyeR", 4: "hide",
+			5: "hide", 6: "hide", 7: "skin", 8: "lashes"},
+		# head_bc is the brow-painted variant — her MetaHuman ships NO eyebrow groom and
+		# none are baked into the skin, so brows are hand-painted onto a copy of the baked
+		# head albedo (blender_work/paint_her_brows.py). Revert to "exp_head_bc.png" to disable.
+		"head_bc": "exp_head_bc_brows.png", "head_n": "exp_head_n.png",
 		"head_srmf": "exp_head_srmf.png", "head_scatter": "exp_head_scatter.png",
+		# Mouth: her bake shipped no usable teeth albedo, so the mouth (surf 1) fell back
+		# to flat off-white → "white tongue / chalky teeth". The MetaHuman teeth UVs are
+		# shared, so the guy's real baked teeth map straight on (pink tongue + enamel).
+		"teeth_bc": "character_T_Teeth_BC.png", "teeth_n": "character_T_Teeth_N.png",
+		# Eyelashes: surf 8 (HiLOD lash mesh) drawn with the MH lash coverage atlas through
+		# the alpha-clipped hair shader (was hidden, like the guy's flat-strip lashes).
+		# The lash coverage mask is in the RGB channels (alpha is all-255) — use_red_mask
+		# MUST be true or the lash card renders as a solid sheet that covers the eye.
+		"lash_atlas": "T_Eyelashes_S_Sparse_Coverage.png",
+		"lash_color": Color(0.028, 0.022, 0.018), "lash_mask_red": true,
 		"body_bc": "exp_body_bc.png", "body_n": "exp_body_n.png",
 		"body_srmf": "exp_body_srmf.png", "body_scatter": "exp_body_scatter.png",
 		"iris_tpl": "exp_eye_iris_%s_bc.png", "iris_n_tpl": "exp_eye_iris_%s_n.png",
@@ -173,7 +190,22 @@ var _skin_mats: Array[ShaderMaterial] = []
 var _hair_mats: Array[ShaderMaterial] = []
 var _hair_back_mats: Array[ShaderMaterial] = []
 var _eye_mats: Array[ShaderMaterial] = []
+var _lash_mats: Array = []                  # eyelash card materials (alpha-clipped)
 var _hair_meshes: Array[MeshInstance3D] = []
+
+# Static-character idle (HER explainer GLB has no skeleton/anim) — a gentle rigid
+# sway/breath/weight-shift driven on the whole character node.
+var _static_idle_on := false
+var _static_idle_clock := 0.0
+var _char_rest_pos := Vector3.ZERO
+
+# Live light-colour cycling (the "Cycle light colours" demo toggle).
+var _color_cycle := false
+var _color_cycle_clock := 0.0
+
+# Faked iris gaze for boneless eyes (HER): the eye shader's iris_offset is driven
+# instead of rotating FACIAL_*_Eye bones (which her static face mesh doesn't have).
+var _iris_off := Vector2.ZERO
 
 var _bs_map := {}          # shape name -> Array of [MeshInstance3D, idx]
 var _bs_values := {}       # shape name -> float (current)
@@ -290,12 +322,17 @@ const KEYPOSES := {
 	"smile": {"mouthSmileLeft": 0.5, "mouthSmileRight": 0.5, "cheekSquintLeft": 0.18, "cheekSquintRight": 0.18},
 	"surprise": {"jawOpen": 0.38, "browInnerUp": 0.65, "browOuterUpLeft": 0.5, "browOuterUpRight": 0.5, "eyeWideLeft": 0.55, "eyeWideRight": 0.55, "mouthFunnel": 0.18},
 	"frown": {"mouthFrownLeft": 0.5, "mouthFrownRight": 0.5, "browDownLeft": 0.45, "browDownRight": 0.45, "mouthLowerDownLeft": 0.18, "mouthLowerDownRight": 0.18},
+	# Nose scrunch — contorts the skin around the nose/cheeks (noseSneer + cheekSquint +
+	# a touch of upper-lip raise + inner-brow). Both characters carry these shapes; the
+	# anim builder skips any a character lacks, so it degrades gracefully.
+	"noseScrunch": {"noseSneerLeft": 0.85, "noseSneerRight": 0.85, "cheekSquintLeft": 0.45, "cheekSquintRight": 0.45, "mouthUpperUpLeft": 0.3, "mouthUpperUpRight": 0.3, "browInnerUp": 0.2},
 }
 # NOTE: no "blink" keypose — blinking is owned by "alive eyes" (naturalistic + random),
 # so the emote anim must NOT drive eyeBlink or its per-frame track would cancel them.
 const KEY_TIMES := [
 	[0.0, "neutral"], [0.7, "smile"], [1.9, "neutral"], [2.5, "surprise"],
-	[3.5, "neutral"], [4.3, "frown"], [5.0, "neutral"], [5.7, "smile"], [8.2, "smile"],
+	[3.5, "neutral"], [4.3, "frown"], [5.0, "neutral"], [5.5, "noseScrunch"],
+	[6.2, "neutral"], [6.7, "smile"], [8.2, "smile"],
 ]
 # face-follow bind state (glue the separate face armature to the animated head bone)
 var _body_skeleton: Skeleton3D
@@ -385,6 +422,18 @@ func _ready() -> void:
 		_set_hero_cam(true)
 		_hero_elapsed = _envf("RELEASE_HERO_T", 0.0)
 		_update_hero_camera()
+	# Headless QA: RELEASE_SMOKE=<secs> runs the tool WINDOWED with face emote + body idle +
+	# colour-cycle ON for <secs> (so the _process-driven paths — static idle, faked iris gaze,
+	# hue cycling — actually execute, not gated off as during capture), then grabs a frame and
+	# quits. Verifies those paths run without error and captures their live state.
+	if OS.has_environment("RELEASE_SMOKE"):
+		_set_face_anim(true); _set_body_anim(true); _set_color_cycle(true)
+		await get_tree().create_timer(_envf("RELEASE_SMOKE", 2.0)).timeout
+		await RenderingServer.frame_post_draw
+		DirAccess.make_dir_recursive_absolute(OUT_DIR)
+		get_viewport().get_texture().get_image().save_png("%s/smoke_%s.png" % [OUT_DIR, _char_key])
+		print("[release] smoke done for ", _char_key, " (idle=", _static_idle_on, " cycle=", _color_cycle, ")")
+		get_tree().quit()
 	# Headless: RELEASE_CAPTURE=1 -> still (+ RELEASE_MOVIE=1 -> 120f turntable).
 	if OS.has_environment("RELEASE_CAPTURE"):
 		if not OS.has_environment("SHOW_CHROME"):
@@ -559,8 +608,9 @@ func _update_orbit_camera() -> void:
 	_camera.fov = _orbit_fov
 	# Lens-shift the subject right of the left settings panel (item 1). Negative
 	# h_offset slides the framed subject to the RIGHT (same sign convention as the
-	# capture-time cap_pan). Tunable live via the "View pan" slider.
-	_camera.h_offset = float(p.get("view_pan", -0.22))
+	# capture-time cap_pan). Tunable live via the "View pan" slider. RELEASE_PAN is a
+	# headless QA override (e.g. RELEASE_PAN=0 centres the subject for diagnostics).
+	_camera.h_offset = _envf("RELEASE_PAN", float(p.get("view_pan", -0.22)))
 
 func _process(delta: float) -> void:
 	# Turntable spins the MODEL (composes with hero cam + orbit). Gated off while the
@@ -585,6 +635,12 @@ func _process(delta: float) -> void:
 	if _follow_active and _body_skeleton and _face_skel and not _leader_pairs.is_empty():
 		_apply_leader_pose()
 
+	# Static-character idle (HER explainer GLB has no skeleton): a gentle rigid sway/breath/
+	# weight-shift on the whole node. Runs after the turntable so the two compose (idle yaw
+	# rides on top of model_yaw). Gated off during capture (the movie path owns rotation.y).
+	if _static_idle_on and _character and not OS.has_environment("RELEASE_CAPTURE"):
+		_update_static_idle(delta)
+
 	# Camera: hero push-in (ping-pong) OR user-driven orbit.
 	if _hero_cam and not OS.has_environment("RELEASE_CAPTURE"):
 		_hero_elapsed += delta
@@ -592,11 +648,17 @@ func _process(delta: float) -> void:
 	else:
 		_update_orbit_camera()
 
-	# Eyes: "alive" (gaze the camera with darts + blinks) overrides the manual focal
-	# point. Otherwise hold the focal point (absolute tracks a world point; relative
-	# holds a head-relative gaze).
+	# Eyes: bone-driven gaze when the face rig HAS eye bones (the guy). Otherwise FAKE gaze by
+	# driving the eye shader's iris_offset — HER explainer face is a static bake with no
+	# FACIAL_*_Eye bones, so this is what makes "her eyes move" (look-at-camera + darts + blinks).
 	if _face_eye_skel != null and _eye_bone_l >= 0:
 		_update_eyes(delta)
+	elif not _eye_mats.is_empty():
+		_update_eyes_iris(delta)
+
+	# Live light-colour cycling (demo toggle).
+	if _color_cycle:
+		_update_color_cycle(delta)
 
 func _update_hero_camera() -> void:
 	# Clean ping-pong dolly: the aim stays on the model's vertical axis (x=z=0) so the
@@ -654,13 +716,22 @@ func _set_body_anim(on: bool) -> void:
 			_body_anim_player.play(bn)
 			_follow_active = _body_skeleton != null and _face_skel != null and not _leader_pairs.is_empty()
 		else:
-			_set_status("no body idle on this character")
+			# No imported idle clip. HER explainer GLB is a STATIC bake (no skeleton, no
+			# AnimationPlayer), so drive a gentle rigid idle on the whole character node.
+			_static_idle_on = true
+			_static_idle_clock = 0.0
+			_set_status("static idle (no skeleton) — gentle rigid sway")
 	else:
 		if _body_anim_player: _body_anim_player.stop()
 		_follow_active = false
 		_leg_clock = 0.0
 		_reset_leg_bones()
 		_reset_face_leader_pose()   # return the driven face bones to their rest (face node never moved)
+		if _static_idle_on:
+			_static_idle_on = false
+			if _character:
+				_character.position = _char_rest_pos
+				_character.rotation.y = deg_to_rad(p.model_yaw)
 
 # Subtle leg weight-shift: counter-phase knee bend + tiny pelvis roll, composed on top of
 # the body idle (we multiply onto the current animated pose each frame). Very low amplitude.
@@ -682,6 +753,88 @@ func _reset_leg_bones() -> void:
 	for idx in [_calf_l_idx, _calf_r_idx, _pelvis_idx]:
 		if idx >= 0:
 			_body_skeleton.set_bone_pose_rotation(idx, _body_skeleton.get_bone_rest(idx).basis.get_rotation_quaternion())
+
+# Gentle rigid idle for a boneless static character (HER explainer): a seamless-looping
+# lateral weight shift + breathing bob + slow yaw drift on the whole node, layered on top
+# of the rest pose / model_yaw. Head, face and body stay locked together (no rig, no seam).
+func _update_static_idle(delta: float) -> void:
+	_static_idle_clock += delta
+	var t := _static_idle_clock
+	var sway_x := sin(t * 0.55) * 0.013          # ±1.3 cm lateral weight shift
+	var bob_y := sin(t * 0.95) * 0.006           # ±6 mm breathing bob
+	var lean_z := sin(t * 0.40) * 0.006
+	var yaw := sin(t * 0.37) * deg_to_rad(1.8)   # subtle turn (±1.8°)
+	_character.position = _char_rest_pos + Vector3(sway_x, bob_y, lean_z)
+	_character.rotation.y = deg_to_rad(p.model_yaw) + yaw
+
+# ---- faked iris gaze (boneless eyes) ----------------------------------------
+# Calibration for the iris-offset gaze (UV space). Flip IRIS_SIGN components after a test
+# render if "look at camera" sends the irises the wrong way.
+const IRIS_MAX_OFF := 0.075      # clamp so the iris disc stays on the sclera
+const IRIS_FOLLOW_K := 0.13      # camera-follow gain
+const IRIS_SIGN := Vector2(1.0, 1.0)
+
+func _update_eyes_iris(delta: float) -> void:
+	var capture_static := OS.has_environment("RELEASE_CAPTURE") and not _anim_active()
+	var off := Vector2.ZERO
+	if bool(p.get("eye_look_cam", true)) and _camera and _character and not capture_static:
+		# gaze toward the lens: head→camera direction projected into the model's local frame
+		var dir: Vector3 = (_camera.global_transform.origin - _head_world).normalized()
+		var loc: Vector3 = _character.global_transform.basis.inverse() * dir
+		off += Vector2(loc.x * IRIS_SIGN.x, loc.y * IRIS_SIGN.y) * IRIS_FOLLOW_K
+	elif not capture_static:
+		off += Vector2(p.eye_fx, p.eye_fy) * 0.12   # manual focal when look-cam is off
+	if bool(p.get("eye_alive", true)) and not capture_static:
+		off += _alive_offset_uv(delta)
+		_update_blink(delta)                          # blinks via eyeBlink* blendshapes (she has them)
+	off.x = clampf(off.x, -IRIS_MAX_OFF, IRIS_MAX_OFF)
+	off.y = clampf(off.y, -IRIS_MAX_OFF, IRIS_MAX_OFF)
+	_iris_off = _iris_off.lerp(off, clampf(delta * 12.0, 0.0, 1.0))
+	for m in _eye_mats:
+		m.set_shader_parameter("iris_offset", _iris_off)
+
+# Small candid saccadic dart + micro-drift, in iris-UV units (mirror of _alive_offset).
+func _alive_offset_uv(delta: float) -> Vector2:
+	_alive_clock += delta
+	if _alive_clock >= _sacc_next:
+		if _rng.randf() < 0.45:
+			_sacc_tgt = Vector2(_rng.randf_range(-0.05, 0.05), _rng.randf_range(-0.035, 0.022))
+			_sacc_next = _alive_clock + _rng.randf_range(0.7, 1.8)
+		else:
+			_sacc_tgt = Vector2(_rng.randfn(0.0, 0.006), _rng.randfn(0.0, 0.005))
+			_sacc_next = _alive_clock + _rng.randf_range(0.4, 1.1)
+	_sacc_off = _sacc_off.lerp(_sacc_tgt, clampf(delta * 20.0, 0.0, 1.0))
+	return _sacc_off + Vector2(sin(_alive_clock * 6.1) * 0.0016, cos(_alive_clock * 4.7) * 0.0013)
+
+# ---- live light-colour cycling (demo) ---------------------------------------
+func _set_color_cycle(on: bool) -> void:
+	_color_cycle = on
+	_color_cycle_clock = 0.0
+	if not on:
+		_apply_all()   # restore the preset's light colours + backdrop
+
+func _update_color_cycle(delta: float) -> void:
+	_color_cycle_clock += delta
+	var t := _color_cycle_clock
+	_cycle_light("key", t * 0.06, 0.0)
+	_cycle_light("keyrect", t * 0.06, 0.02)
+	_cycle_light("fill", t * 0.05, 0.5)     # ~complementary to the key
+	_cycle_light("rim", t * 0.08, 0.33)
+	if _lights.has("ambient"):
+		(_lights["ambient"] as Light3D).light_color = Color.from_hsv(fmod(t * 0.04 + 0.66, 1.0), 0.55, 0.5)
+	# tint the backdrop gradient + environment bg for full-scene mood
+	var bgc := Color.from_hsv(fmod(t * 0.03, 1.0), 0.5, 0.28)
+	if _env: _env.background_color = bgc
+	if _backdrop_mat:
+		_backdrop_mat.set_shader_parameter("top_col", bgc.darkened(0.12))
+		_backdrop_mat.set_shader_parameter("bot_col", bgc.lightened(0.06))
+		_backdrop_mat.set_shader_parameter("glow_col", bgc.lightened(0.12))
+
+func _cycle_light(key: String, phase: float, offset: float) -> void:
+	if not _lights.has(key): return
+	var base: Color = p.get(key + "_col", Color(1, 1, 1))
+	var v: float = maxf(base.v, 0.6)
+	(_lights[key] as Light3D).light_color = Color.from_hsv(fmod(phase + offset, 1.0), 0.7, v)
 
 func _zero_all_blendshapes() -> void:
 	for sname in _bs_map.keys():
@@ -874,7 +1027,8 @@ func _clear_character() -> void:
 		_character.queue_free()
 	_character = null
 	_skin_mats.clear(); _hair_mats.clear(); _hair_back_mats.clear()
-	_eye_mats.clear(); _hair_meshes.clear()
+	_eye_mats.clear(); _lash_mats.clear(); _hair_meshes.clear()
+	_static_idle_on = false; _static_idle_clock = 0.0; _iris_off = Vector2.ZERO
 	_bs_map.clear()
 	# tear down per-character animation state
 	if _face_anim_player and is_instance_valid(_face_anim_player):
@@ -926,6 +1080,7 @@ func _load_character(custom_path := "") -> void:
 	node.scale = Vector3(sf, sf, sf)
 	var aabb2 := _world_aabb(node)
 	node.position = Vector3(0.0, -aabb2.position.y, p.zoff)
+	_char_rest_pos = node.position   # base pose for the static (boneless) idle
 	node.rotation.y = deg_to_rad(p.model_yaw)
 	if custom_path == "":
 		_wire_materials(node)
@@ -985,6 +1140,7 @@ func _wire_materials(root: Node) -> void:
 	_eye_mats = [eye_l, eye_r]
 	var hide_mat := _make_hide()
 	var teeth_mat := _make_teeth()
+	var lash_mat := _make_lash()
 	for mi in meshes:
 		# --- hair / groom cards ---
 		var atlas_entry := _hair_atlas_for(mi.name)
@@ -996,7 +1152,7 @@ func _wire_materials(root: Node) -> void:
 		# --- face ---
 		if String(mi.name) == _profile.get("face_mesh_name", ""):
 			if _profile.get("face_mode", "name") == "index":
-				_wire_face_by_index(mi, face_skin, teeth_mat, eye_r, eye_l, hide_mat)
+				_wire_face_by_index(mi, face_skin, teeth_mat, eye_r, eye_l, hide_mat, lash_mat)
 			else:
 				_wire_face_by_name(mi, face_skin, eye_l, eye_r, hide_mat)
 			continue
@@ -1018,9 +1174,10 @@ func _wire_materials(root: Node) -> void:
 				mi.set_surface_override_material(s, cloth)
 			_outfit_mats.append(cloth)
 
-func _wire_face_by_index(mi: MeshInstance3D, skin, teeth, eye_r, eye_l, hide) -> void:
+func _wire_face_by_index(mi: MeshInstance3D, skin, teeth, eye_r, eye_l, hide, lash = null) -> void:
 	var imap: Dictionary = _profile["face_index_map"]
-	var role_mat := {"skin": skin, "teeth": teeth, "eyeR": eye_r, "eyeL": eye_l, "hide": hide}
+	var role_mat := {"skin": skin, "teeth": teeth, "eyeR": eye_r, "eyeL": eye_l, "hide": hide,
+		"lashes": (lash if lash != null else hide)}
 	for s in range(mi.mesh.get_surface_count()):
 		var role: String = imap.get(s, "")
 		if role_mat.has(role):
@@ -1140,13 +1297,47 @@ func _make_hide() -> StandardMaterial3D:
 	return m
 
 func _make_teeth() -> StandardMaterial3D:
+	# The "teeth" surface is the whole mouth — teeth + tongue + gums — so it MUST use the
+	# real baked albedo (pink tongue, gum line). With a texture, keep albedo white so the
+	# texture shows true; only the no-texture fallback uses a tint, and that tint is BONE,
+	# not chalk-white (the old 0.95 fallback is what made her tongue + teeth read white).
 	var m := StandardMaterial3D.new()
 	var bc := _rtex(_profile.get("teeth_bc", ""))
-	if bc: m.albedo_texture = bc
-	m.albedo_color = Color(0.95, 0.93, 0.88)
+	if bc:
+		m.albedo_texture = bc
+		m.albedo_color = Color(1, 1, 1)
+	else:
+		m.albedo_color = Color(0.74, 0.70, 0.64)
 	var nn := _rtex(_profile.get("teeth_n", ""))
-	if nn: m.normal_enabled = true; m.normal_texture = nn
-	m.roughness = 0.35; m.metallic = 0.0
+	if nn:
+		m.normal_enabled = true; m.normal_texture = nn
+	m.roughness = 0.42; m.metallic = 0.0
+	# A little subsurface so the tongue/gums read as wet flesh rather than plastic.
+	m.subsurf_scatter_enabled = true
+	m.subsurf_scatter_strength = 0.22
+	return m
+
+# Eyelash material: the MH lash card coverage atlas through the alpha-clipped, shadow-
+# casting hair shader. With no lash atlas in the profile (e.g. the guy) we keep the old
+# behaviour of hiding the flat lash strips (solid-dark strips read as raccoon rings).
+func _make_lash() -> Material:
+	var atlas_name: String = _profile.get("lash_atlas", "")
+	if atlas_name == "":
+		return _make_hide()
+	var tex := _rtex(atlas_name)
+	if tex == null:
+		return _make_hide()
+	var m := ShaderMaterial.new()
+	m.shader = load("res://scenes/hair_card_shadow.gdshader") as Shader
+	m.set_shader_parameter("coverage_atlas", tex)
+	m.set_shader_parameter("use_red_mask", bool(_profile.get("lash_mask_red", false)))
+	m.set_shader_parameter("invert_mask", false)
+	m.set_shader_parameter("hair_color", _profile.get("lash_color", Color(0.03, 0.022, 0.018)))
+	m.set_shader_parameter("alpha_threshold", 0.12)
+	m.set_shader_parameter("root_darkening", 0.0)
+	m.set_shader_parameter("roughness_val", 0.5)
+	m.set_shader_parameter("specular_val", 0.12)
+	_lash_mats.append(m)
 	return m
 
 # ---- custom GLB best-effort wiring ------------------------------------------
@@ -1530,6 +1721,12 @@ func _setup_ui() -> void:
 	_color(vb, "amb_col", "Ambient colour")
 	_color(vb, "catch_col", "Catchlight colour")
 	_color(vb, "bg_col", "Background colour")
+	# Animate the light colours through the hue wheel (key/fill/rim/ambient + backdrop) for a
+	# lively colour-shifting demo. Non-destructive: toggling off restores the preset colours.
+	var cyc := CheckBox.new(); cyc.text = "Cycle light colours (animate)"
+	cyc.toggled.connect(func(on): _set_color_cycle(on))
+	_style_checkbox(cyc); vb.add_child(cyc)
+	_refreshers.append(func(): cyc.set_pressed_no_signal(_color_cycle))
 
 	_section(vb, "SKIN (face + body)")
 	_color(vb, "skin_tint", "Skin colour (tint)")

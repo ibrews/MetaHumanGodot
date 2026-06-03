@@ -52,11 +52,22 @@ present and unchanged) into one "best of both worlds" look-dev environment:
   env-ambient, **AgX** tonemap, **SSIL**, colour balance (saturation / brightness /
   contrast), model yaw, and a UE-frame-0 overlay. Every slider has a type-in box
   (values can exceed the slider range).
+- **Animation** — an independent **face emote** (neutral → smile → surprise → frown
+  → **nose scrunch** → smile, so the skin actually contorts), a **body idle** (a
+  rigged weight-shift on characters with a skeleton, or a gentle procedural sway on
+  static/boneless meshes), naturalistic **eye gaze** (look-at-camera + saccadic
+  darts + blinks — driven by the eye bones when present, or by a faked iris-shift
+  shader on boneless faces), a turntable, and a ping-pong **hero camera**.
 - **Matched-to-Unreal rig** — the lights and camera are an exact port of a UE
   "Moonlight" CineCamera scene (cm→m, Z-up→Y-up, left→right-handed), so a Godot
   turntable lines up with the Unreal one. Energies are yours to tune.
-- **Per-character presets** — save/load JSON looks keyed per character; ships a
-  *moonlight* and a *studio* preset for each (`presets/<char>__<name>.json`).
+- **Per-character presets + lighting library** — save/load JSON looks keyed per
+  character. Ships a dozen-plus looks for each (`presets/<char>__<name>.json`):
+  *moonlight, studio, beauty, clinical, noir, sunset, teal_orange* plus a lighting
+  set — *golden_hour, rembrandt, cyberpunk, high_key, candlelight, split, overcast,
+  emerald*. A **Cycle light colours** toggle animates the whole rig through the hue
+  wheel for a live colour-shifting demo (non-destructive — toggling off restores the
+  preset).
 - **Headless capture** — render a still and a 120-frame turntable mp4 without the
   UI (see [Capture](#capture-stills--turntables)).
 
