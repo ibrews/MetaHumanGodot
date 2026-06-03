@@ -107,19 +107,30 @@ const TURNTABLE_SPEED: float = 18.0          # deg/s — turntable spins the MOD
 var _anim_playing: bool = false
 var _face_anim_player: AnimationPlayer
 var _body_anim_player: AnimationPlayer
-# Runtime face-follow (the face is a separate skeleton; it must track the body's
-# head bone when the body idle plays). Bind data captured at rest.
+# Runtime LeaderPose seam fix (ported from emote_render.gd / release.gd 2026-06-02; see
+# memory reference-godot-leaderpose-seam-fix). character.glb has TWO skeletons: the BODY
+# skeleton (metahuman_base_skel) drives body+outfit; a SEPARATE FACE skeleton (carries the
+# FACIAL_* bones) skins the face mesh = head + neck + bust-cap. The body idle animates ONLY
+# the body skeleton. The OLD code rigidly slaved the whole FaceArmature NODE to the body
+# 'head' bone, which rode the bust-cap UP through the shirt collar while the body chest stayed
+# put → a pale seam. The fix emulates UE's SetLeaderPoseComponent: each frame we drive every
+# bone the FACE skel SHARES by name with the BODY skel so the neck/clavicle/bust deforms WITH
+# the body (seam stays glued) while the head still bobs with the head bone. The FaceArmature
+# NODE is left at its bind transform and FACIAL_* bones stay at rest, so the blend-shape emote
+# + eyes are untouched. The two rigs were separate FBX exports, so shared-bone LOCAL rest frames
+# differ up to 180° — so we transfer motion through GLOBAL poses, NOT a local copy:
+#   desired face global  PFg = PBg · rest_xfer,  rest_xfer = RBg⁻¹ · RFg  (each rig's own rest
+# global, precomputed per shared bone). The bone math is skeleton-local, so the turntable composes.
 var body_skeleton: Skeleton3D
 var head_bone_idx_body: int = -1
-var face_armature: Node3D
-var face_arm_rest_origin: Vector3 = Vector3.ZERO
-var face_arm_rest_basis: Basis = Basis.IDENTITY
-var face_arm_rest_local: Transform3D = Transform3D.IDENTITY
+# Drift-free head-world reconstruction (for the catchlight + hero-cam aim): the body skeleton's
+# Node3D transform DRIFTS during the root-motion idle (its position is animated while the bone
+# poses compensate), so we rebuild the head world pos from the bind-time skeleton transform.
 var skel_basis_norm: Basis = Basis.IDENTITY
 var skel_scale_factor: float = 1.0
 var skel_bind_origin: Vector3 = Vector3.ZERO
-var head_world_bind_origin: Vector3 = Vector3.ZERO
-var head_world_bind_basis: Basis = Basis.IDENTITY
+var _face_skel: Skeleton3D                 # the face mesh's skeleton (the one with FACIAL_L_Eye)
+var _leader_pairs: Array = []              # [body_idx, face_idx, face_parent_idx, rest_xfer], parent-first
 # Hero camera (wide→close push-in, ping-pong). Independent of the turntable.
 var _hero_cam: bool = false
 var _hero_elapsed: float = 0.0
@@ -224,7 +235,9 @@ func _ready() -> void:
 	if not _placeholder:
 		await get_tree().process_frame      # let the stop settle before binding
 		_resolve_body_skeleton(root)
-		_bind_face_to_head_bone(root)
+		_capture_head_world_ref()           # head-bone world ref for the catchlight + hero cam
+		_resolve_face_skeleton(root)        # the FACIAL_* (face mesh) skeleton
+		_build_leader_pose_map()            # seam fix: shared body↔face bones for the LeaderPose copy
 		_build_face_animation(root)
 	_build_ui()
 	_setup_window_icon()
@@ -248,20 +261,20 @@ func _process(delta: float) -> void:
 	if auto_turntable and _character:
 		_character.rotation.y += deg_to_rad(TURNTABLE_SPEED) * delta
 
-	# Runtime face-follow: glue the separate face skeleton to the body's animated
-	# head bone while the body idle plays. Composes the character's (turntable)
-	# rotation on top so face + body stay in sync when both are on.
-	if _anim_playing and not _placeholder and body_skeleton and face_armature and head_bone_idx_body >= 0:
+	# Runtime LeaderPose (collar-seam fix). While the body idle plays, drive every bone the FACE
+	# skeleton shares with the animated BODY skeleton so the neck/clavicle/bust-cap deforms WITH
+	# the body (closing the collar seam) while the head still bobs with the head bone. The
+	# FaceArmature NODE stays at its bind transform; FACIAL_* bones (incl. the eyes) stay at rest
+	# so the blend-shape emote is untouched. The bone math is skeleton-local, so the character's
+	# (turntable) rotation composes for free — no need to fold _character.global_transform in.
+	if _anim_playing and not _placeholder and body_skeleton and head_bone_idx_body >= 0:
+		# Drift-free head-world reconstruction (the catchlight + hero cam aim at the real face).
 		var head_local_pose: Transform3D = body_skeleton.get_bone_global_pose(head_bone_idx_body)
 		var head_world_origin: Vector3 = skel_bind_origin + skel_basis_norm * (head_local_pose.origin * skel_scale_factor)
-		var head_world_basis: Basis = (skel_basis_norm * head_local_pose.basis).orthonormalized()
-		var rot_delta: Basis = head_world_basis * head_world_bind_basis.inverse()
-		var trans_delta: Vector3 = head_world_origin - head_world_bind_origin
-		var pivot: Vector3 = head_world_bind_origin
-		var new_origin: Vector3 = pivot + rot_delta * (face_arm_rest_origin - pivot) + trans_delta
-		var new_basis: Basis = rot_delta * face_arm_rest_basis
-		face_armature.global_transform = _character.global_transform * Transform3D(new_basis, new_origin)
 		_head_world = _character.global_transform * head_world_origin
+		# Glue the face mesh to the body via the per-bone LeaderPose copy.
+		if _face_skel != null and not _leader_pairs.is_empty():
+			_apply_leader_pose()
 
 	# Camera: hero push-in (ping-pong) or the user-driven orbit.
 	if _hero_cam:
@@ -319,6 +332,57 @@ func _capture_tick() -> void:
 			_grab("%s_surprise.png" % _cap_prefix)
 		elif _cap_frame == 28:
 			print("[look_dev] animtest done, quitting")
+			get_tree().quit()
+		return
+	if OS.has_environment("LOOKDEV_SEAMTEST"):
+		# Collar-seam regression for the LeaderPose fix: body idle ON, frame the collar, freeze
+		# the idle at two head-bob extremes (seek 1.6 & 4.4 — the worst-case phases from the
+		# release verification) and confirm the bust-cap stays glued (no seam, no neck gap) while
+		# the head pose visibly differs between seeks; then a face-framed smile to prove the emote
+		# + eyes are untouched. DOF off for a sharp collar; the default look-dev key/fill read it.
+		if _cap_frame == 6:
+			_set_anim_playing(true)
+			if _body_anim_player: _body_anim_player.speed_scale = 0.0
+			if _face_anim_player: _face_anim_player.speed_scale = 0.0
+			_ui_layer.visible = false
+			if _hint_layer: _hint_layer.visible = false
+			dof_enabled = false
+			# Brighten so the dark collar reads (mirrors the release seam recipe: exposure 1.7,
+			# ambient 0.7). Zero-cost interactively — only the LOOKDEV_SEAMTEST path sets these.
+			if env:
+				env.tonemap_exposure = 1.7
+				env.ambient_light_energy = 0.7
+			# Frontal-ish, aimed at the neckline (look_dev's model faces ~yaw -21, its default
+			# portrait direction). Slight downward tilt reads the collar line where a poking
+			# bust-cap sliver would show.
+			orbit_yaw = -21.0
+			orbit_pitch = 4.0
+			orbit_dist = 0.85
+			orbit_target = Vector3(0.0, 1.50, 0.0)
+			_set_fov(30.0)
+			_update_orbit_camera()
+		elif _cap_frame == 10:
+			if _body_anim_player: _body_anim_player.seek(1.6, true)
+		elif _cap_frame == 14:
+			_grab("%s_seam_seek16.png" % _cap_prefix)
+		elif _cap_frame == 18:
+			if _body_anim_player: _body_anim_player.seek(4.4, true)
+		elif _cap_frame == 22:
+			_grab("%s_seam_seek44.png" % _cap_prefix)
+		elif _cap_frame == 26:
+			# Face-framed smile — the LeaderPose copy must leave FACIAL_* bones + blend shapes alone.
+			if _body_anim_player: _body_anim_player.seek(0.0, true)   # head upright for the face beauty shot
+			orbit_yaw = -16.0
+			orbit_pitch = 2.0
+			orbit_dist = 0.78
+			orbit_target = Vector3(0.0, 1.70, 0.0)
+			_set_fov(32.0)
+			_update_orbit_camera()
+			if _face_anim_player: _face_anim_player.seek(5.9, true)
+		elif _cap_frame == 30:
+			_grab("%s_seam_emote.png" % _cap_prefix)
+		elif _cap_frame == 34:
+			print("[look_dev] seamtest done, quitting")
 			get_tree().quit()
 		return
 	if _cap_frame == 24:
@@ -1327,8 +1391,7 @@ func _set_anim_playing(on: bool) -> void:
 			_body_anim_player.stop()
 		if _face_anim_player:
 			_face_anim_player.stop()
-		if face_armature:
-			face_armature.transform = face_arm_rest_local
+		_reset_face_leader_pose()   # return the driven face bones to rest (the face node never moved)
 		_reset_face_blendshapes()
 
 
@@ -1419,32 +1482,95 @@ func _resolve_body_skeleton(root: Node) -> void:
 	body_skeleton = best
 
 
-func _bind_face_to_head_bone(root: Node) -> void:
+func _capture_head_world_ref() -> void:
+	# Capture the data to reconstruct the body 'head' bone's REAL rendered world position at
+	# runtime (for the catchlight + hero-cam aim). The body skeleton's Node3D transform DRIFTS
+	# during the root-motion idle, so we rebuild from the bind-time skeleton transform. The face
+	# mesh is glued to the body by the per-bone LeaderPose copy (below), NOT by moving the
+	# FaceArmature node — so there is no whole-armature rest transform to grab anymore.
 	if body_skeleton == null:
 		return
 	head_bone_idx_body = body_skeleton.find_bone("head")
 	if head_bone_idx_body < 0:
 		return
-	var stack: Array[Node] = [root]
-	while stack.size() > 0:
-		var n: Node = stack.pop_back()
-		if n is Node3D and String(n.name).begins_with("FaceArmature"):
-			face_armature = n
-			break
-		for c in n.get_children():
-			stack.append(c)
-	if face_armature == null:
-		return
-	var head_local_rest: Transform3D = body_skeleton.get_bone_global_rest(head_bone_idx_body)
-	face_arm_rest_origin = face_armature.global_transform.origin
-	face_arm_rest_basis = face_armature.global_transform.basis
-	face_arm_rest_local = face_armature.transform
 	var skel_basis: Basis = body_skeleton.global_transform.basis
 	skel_basis_norm = skel_basis.orthonormalized()
 	skel_scale_factor = skel_basis.x.length()
 	skel_bind_origin = body_skeleton.global_transform.origin
-	head_world_bind_origin = skel_bind_origin + skel_basis_norm * (head_local_rest.origin * skel_scale_factor)
-	head_world_bind_basis = (skel_basis_norm * head_local_rest.basis).orthonormalized()
+
+
+func _resolve_face_skeleton(root: Node) -> void:
+	# The face mesh (head + neck + bust-cap) is skinned by the MetaHuman FACE skeleton — the one
+	# carrying the FACIAL_* bones. Identify it by FACIAL_L_Eye (the BODY skeleton has spine/head
+	# but never the facial bones). This is the skeleton the LeaderPose copy drives; FACIAL_* bones
+	# are deliberately left OUT of the map so the emote + eyes hold.
+	_face_skel = null
+	var stack: Array[Node] = [root]
+	while stack.size() > 0:
+		var n: Node = stack.pop_back()
+		if n is Skeleton3D and (n as Skeleton3D).find_bone("FACIAL_L_Eye") >= 0:
+			_face_skel = n as Skeleton3D
+			return
+		for c in n.get_children():
+			stack.append(c)
+	push_warning("[look_dev] face skeleton (FACIAL_L_Eye) not found — LeaderPose seam fix disabled")
+
+
+func _build_leader_pose_map() -> void:
+	# For every BODY bone the FACE skeleton also has (by name), precompute rest_xfer = RBg⁻¹ · RFg
+	# (each rig's own rest global pose) so per frame we only do PFg = PBg · rest_xfer. Sorted by
+	# face-bone index so parents are driven before children (Godot keeps a bone's parent index
+	# below its own). The shared set is the bust region: pelvis→spine→neck→head→clavicle→upperarm
+	# — exactly what must move with the body to keep the collar glued, while the head still bobs.
+	_leader_pairs.clear()
+	if body_skeleton == null or _face_skel == null:
+		push_warning("[look_dev] leader-pose map skipped (body or face skeleton missing)")
+		return
+	for bi in range(body_skeleton.get_bone_count()):
+		var fi: int = _face_skel.find_bone(body_skeleton.get_bone_name(bi))
+		if fi < 0:
+			continue
+		var rest_xfer: Transform3D = body_skeleton.get_bone_global_rest(bi).affine_inverse() \
+			* _face_skel.get_bone_global_rest(fi)
+		_leader_pairs.append([bi, fi, _face_skel.get_bone_parent(fi), rest_xfer])
+	_leader_pairs.sort_custom(func(a, b): return a[1] < b[1])
+	print("[look_dev] leader-pose map: %d shared bones (body %d / face %d)" % [
+		_leader_pairs.size(), body_skeleton.get_bone_count(), _face_skel.get_bone_count()])
+
+
+func _apply_leader_pose() -> void:
+	# Per-frame: set each shared face bone's pose so its GLOBAL pose tracks the body's global
+	# motion (PFg = PBg · rest_xfer). Cache the desired face global per bone and convert to a
+	# local pose via the (already-computed, parent-first) parent global — no skeleton readback,
+	# no dependence on Godot's recompute order. FACIAL_* bones are never in the map, so they
+	# (incl. the eyes) stay at rest and the blend-shape emote is untouched. At rest PBg = RBg →
+	# PFg = RFg → no distortion.
+	var pfg_cache: Dictionary = {}
+	for pair in _leader_pairs:
+		var bi: int = pair[0]
+		var fi: int = pair[1]
+		var fpar: int = pair[2]
+		var pfg: Transform3D = body_skeleton.get_bone_global_pose(bi) * (pair[3] as Transform3D)
+		pfg_cache[fi] = pfg
+		var parent_g: Transform3D = Transform3D.IDENTITY
+		if fpar >= 0:
+			parent_g = pfg_cache[fpar] if pfg_cache.has(fpar) else _face_skel.get_bone_global_pose(fpar)
+		var local: Transform3D = parent_g.affine_inverse() * pfg
+		_face_skel.set_bone_pose_position(fi, local.origin)
+		_face_skel.set_bone_pose_rotation(fi, local.basis.get_rotation_quaternion())
+		_face_skel.set_bone_pose_scale(fi, local.basis.get_scale())
+
+
+func _reset_face_leader_pose() -> void:
+	# Restore every driven face bone to its local rest (called when the body idle stops).
+	if _face_skel == null:
+		return
+	for pair in _leader_pairs:
+		var fi: int = pair[1]
+		var r: Transform3D = _face_skel.get_bone_rest(fi)
+		_face_skel.set_bone_pose_position(fi, r.origin)
+		_face_skel.set_bone_pose_rotation(fi, r.basis.get_rotation_quaternion())
+		_face_skel.set_bone_pose_scale(fi, r.basis.get_scale())
 
 
 func _find_face_mesh(root: Node) -> MeshInstance3D:
