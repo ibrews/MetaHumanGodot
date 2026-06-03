@@ -250,8 +250,17 @@ var _start_orbit_fov := 28.0
 var _start_orbit_target := Vector3(0.0, 1.33, 0.0)
 var _outfit_mats: Array = []
 var _body_skin_mat: ShaderMaterial   # the BODY skin material (for the anti-poke vertex shrink)
-var _face_off := Transform3D.IDENTITY   # face armature relative to head bone (world, at bind)
-const FACE_BOB_DAMP := 1.0               # full head-bob follow (damping opened a neck gap — worse)
+var _face_off := Transform3D.IDENTITY   # legacy (rigid follow); unused by the LeaderPose path
+# LeaderPose emulation (collar-seam fix). The face mesh (head + neck + bust-cap) is skinned
+# by the FACE skeleton; the body idle animates the SEPARATE body skeleton. Instead of rigidly
+# moving the whole face armature by the head bone (which rode the bust-cap UP through the
+# shirt collar), we drive every bone the two rigs SHARE by name so the face's neck/clavicle/
+# bust deforms WITH the body (seam stays glued) while the head still bobs with the head bone.
+# The two rigs' rest bone-frames DIFFER (separate FBX exports oriented bones up to 180° apart —
+# see feedback-cross-fbx-bone-orientation), so we transfer motion through GLOBAL poses, NOT a
+# local-pose copy:  desired face global  PFg = PBg · RBg⁻¹ · RFg  (rest_xfer = RBg⁻¹·RFg, const).
+var _face_skel: Skeleton3D                 # the face mesh's skeleton (the one with FACIAL_L_Eye)
+var _leader_pairs: Array = []              # [body_idx, face_idx, face_parent_idx, rest_xfer], parent-first
 
 # ---- eye gaze (item 3, redesigned): both eyes LOOK-AT a single focal point. The 8
 # ARKit eyeLook* shapes were stripped (horror-eye fix), so we aim the
@@ -569,18 +578,12 @@ func _process(delta: float) -> void:
 	if _body_anim_on and _body_skeleton:
 		_update_leg_idle(delta)
 
-	# Runtime face-follow: glue the separate FaceArmature to the body 'head' bone using its
-	# CURRENT world transform (skel.global * bone_global_pose = true skinning transform),
-	# times the bind-time face↔head offset. Handles idle bob AND a turntable-rotated node.
-	if _follow_active and _body_skeleton and _face_armature and _head_bone_idx >= 0:
-		var hp: Transform3D = _body_skeleton.get_bone_global_pose(_head_bone_idx)
-		var hr: Transform3D = _body_skeleton.get_bone_global_rest(_head_bone_idx)
-		# Dampen the idle head-bob TRANSLATION (keep full rotation) so the neck/bust doesn't
-		# ride UP through the shirt's collar opening. Done in skeleton-local space, so a
-		# turntable-rotated node is unaffected. FACE_BOB_DAMP 0=no bob (glued), 1=full bob.
-		hp.origin = hr.origin.lerp(hp.origin, FACE_BOB_DAMP)
-		var head_now: Transform3D = _body_skeleton.global_transform * hp
-		_face_armature.global_transform = head_now * _face_off
+	# Runtime LeaderPose: drive the FACE skeleton's shared bones from the animated BODY skeleton
+	# so the neck/clavicle/bust-cap deforms WITH the body (closing the collar seam) while the head
+	# still bobs with the head bone. The face armature NODE stays at rest — only bone poses move.
+	# Composes with a turntable (works in skeleton-local space) and runs BEFORE the eye-gaze writes.
+	if _follow_active and _body_skeleton and _face_skel and not _leader_pairs.is_empty():
+		_apply_leader_pose()
 
 	# Camera: hero push-in (ping-pong) OR user-driven orbit.
 	if _hero_cam and not OS.has_environment("RELEASE_CAPTURE"):
@@ -649,7 +652,7 @@ func _set_body_anim(on: bool) -> void:
 			var ba: Animation = _body_anim_player.get_animation(bn)
 			if ba: ba.loop_mode = Animation.LOOP_LINEAR
 			_body_anim_player.play(bn)
-			_follow_active = _body_skeleton != null and _face_armature != null and _head_bone_idx >= 0
+			_follow_active = _body_skeleton != null and _face_skel != null and not _leader_pairs.is_empty()
 		else:
 			_set_status("no body idle on this character")
 	else:
@@ -657,8 +660,7 @@ func _set_body_anim(on: bool) -> void:
 		_follow_active = false
 		_leg_clock = 0.0
 		_reset_leg_bones()
-		if _face_armature and is_instance_valid(_face_armature):
-			_face_armature.transform = _face_arm_rest_local
+		_reset_face_leader_pose()   # return the driven face bones to their rest (face node never moved)
 
 # Subtle leg weight-shift: counter-phase knee bend + tiny pelvis roll, composed on top of
 # the body idle (we multiply onto the current animated pose each frame). Very low amplitude.
@@ -747,6 +749,57 @@ func _bind_face_to_head_bone(root: Node) -> void:
 	var head_world: Transform3D = _body_skeleton.global_transform * _body_skeleton.get_bone_global_rest(_head_bone_idx)
 	_face_off = head_world.affine_inverse() * _face_armature.global_transform
 
+# Build the body→face shared-bone map for the LeaderPose copy. For every BODY bone that the
+# FACE skeleton also has (by name), precompute rest_xfer = RBg⁻¹ · RFg (each rig's own rest
+# global pose) so per frame we only do PFg = PBg · rest_xfer. Sorted by face-bone index so
+# parents are driven before children (Godot keeps a bone's parent index below its own).
+func _build_leader_pose_map() -> void:
+	_leader_pairs.clear()
+	_face_skel = _face_eye_skel   # the FACIAL_L_Eye skeleton == the face mesh's skeleton
+	if _body_skeleton == null or _face_skel == null:
+		return
+	for bi in range(_body_skeleton.get_bone_count()):
+		var fi: int = _face_skel.find_bone(_body_skeleton.get_bone_name(bi))
+		if fi < 0:
+			continue
+		var rest_xfer: Transform3D = _body_skeleton.get_bone_global_rest(bi).affine_inverse() \
+			* _face_skel.get_bone_global_rest(fi)
+		_leader_pairs.append([bi, fi, _face_skel.get_bone_parent(fi), rest_xfer])
+	_leader_pairs.sort_custom(func(a, b): return a[1] < b[1])
+	print("[release] leader-pose map: %d shared bones (body %d / face %d)" % \
+		[_leader_pairs.size(), _body_skeleton.get_bone_count(), _face_skel.get_bone_count()])
+
+# Per-frame LeaderPose: set each shared face bone's pose so its GLOBAL pose tracks the body's
+# global motion (PFg = PBg · rest_xfer). We cache the desired face global per bone and convert
+# to a local pose using the (already-computed, parent-first) parent global — no skeleton readback
+# and no dependence on Godot's recompute order. Leaves FACIAL_* bones (incl. the eyes) at rest so
+# the blend-shape emote and the eye-gaze writes (which run AFTER this) are untouched.
+func _apply_leader_pose() -> void:
+	var pfg_cache := {}
+	for pair in _leader_pairs:
+		var bi: int = pair[0]
+		var fi: int = pair[1]
+		var fpar: int = pair[2]
+		var pfg: Transform3D = _body_skeleton.get_bone_global_pose(bi) * (pair[3] as Transform3D)
+		pfg_cache[fi] = pfg
+		var parent_g: Transform3D = Transform3D.IDENTITY
+		if fpar >= 0:
+			parent_g = pfg_cache[fpar] if pfg_cache.has(fpar) else _face_skel.get_bone_global_pose(fpar)
+		var local: Transform3D = parent_g.affine_inverse() * pfg
+		_face_skel.set_bone_pose_position(fi, local.origin)
+		_face_skel.set_bone_pose_rotation(fi, local.basis.get_rotation_quaternion())
+		_face_skel.set_bone_pose_scale(fi, local.basis.get_scale())
+
+# Restore every driven face bone to its local rest (called when the body idle stops).
+func _reset_face_leader_pose() -> void:
+	if _face_skel == null: return
+	for pair in _leader_pairs:
+		var fi: int = pair[1]
+		var r: Transform3D = _face_skel.get_bone_rest(fi)
+		_face_skel.set_bone_pose_position(fi, r.origin)
+		_face_skel.set_bone_pose_rotation(fi, r.basis.get_rotation_quaternion())
+		_face_skel.set_bone_pose_scale(fi, r.basis.get_scale())
+
 func _find_face_mesh(root: Node) -> MeshInstance3D:
 	var stack: Array[Node] = [root]
 	var best: MeshInstance3D = null
@@ -828,6 +881,7 @@ func _clear_character() -> void:
 		_face_anim_player.queue_free()
 	_face_anim_player = null; _body_anim_player = null
 	_body_skeleton = null; _face_armature = null; _head_bone_idx = -1
+	_face_skel = null; _leader_pairs.clear()
 	_face_eye_skel = null; _eye_bone_l = -1; _eye_bone_r = -1
 	_face_anim_on = false; _body_anim_on = false; _follow_active = false
 	_pelvis_idx = -1; _calf_l_idx = -1; _calf_r_idx = -1; _leg_clock = 0.0
@@ -892,6 +946,7 @@ func _load_character(custom_path := "") -> void:
 	_find_body_anim_player(node)
 	_resolve_eye_bones(node)          # item 3: FACIAL_L/R_Eye for bone-driven gaze
 	_bind_face_to_head_bone(node)
+	_build_leader_pose_map()          # seam fix: shared body↔face bones for the LeaderPose copy
 
 func _switch_character() -> void:
 	var i := CHAR_ORDER.find(_char_key)
