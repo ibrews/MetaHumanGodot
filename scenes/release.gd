@@ -42,18 +42,18 @@ const PROFILES := {
 		"glb": "res://character_explainer.glb",
 		# Wire by SURFACE INDEX, not material name (the MetaHuman bake material names
 		# are misleading: surface 0 is "..Teeth_Baked.." but is the MAIN face skin,
-		# 24K verts). Map VERIFIED by scenes/probe_explainer.gd against the shipped GLB.
-		# HER eye-surface order DIFFERS from the guy's (NOT identical, despite the
-		# earlier assumption) — her real left eyeball is surf 2, right eyeball surf 3,
-		# the corneal EyeShell surf 4, and the eyelash mesh surf 8:
+		# 24K verts). The eye wiring below is the EMPIRICALLY-GOOD config: the visible
+		# eye reads off the corneal EyeShell (surf 4, given the eyeL iris) over the
+		# eyeball (surf 3 = eyeR); surf 2 (a partial eyeball) stays HIDDEN. (A probe-
+		# driven "correction" to 2:eyeL / 4:hide was WRONG — hiding the shell exposed
+		# the lids and read as a closed eye. Don't re-map the eyes without a render.)
 		#   0 MI_Teeth_Baked = face skin (24414 v)   7 Face_Skin cap (276 v)
 		#   1 M_Hide_0       = mouth: teeth+tongue+gums (4613 v)
-		#   2 MI_EyeL_Baked  = LEFT eyeball   3 MI_EyeR_Baked = RIGHT eyeball
-		#   4 EyeShell  5 LacrimalFluid  6 M_Hide_1   (hidden)
-		#   8 MI_Face_EyelashesHiLODs = eyelashes (now shown via the lash atlas)
+		#   3 eyeR + 4 EyeShell(eyeL) = the two visible eyes · 2,5,6 hidden
+		#   8 MI_Face_EyelashesHiLODs = eyelashes (shown via the lash atlas)
 		"face_mode": "index",
 		"face_mesh_name": "Face",
-		"face_index_map": {0: "skin", 1: "teeth", 2: "eyeL", 3: "eyeR", 4: "hide",
+		"face_index_map": {0: "skin", 1: "teeth", 2: "hide", 3: "eyeR", 4: "eyeL",
 			5: "hide", 6: "hide", 7: "skin", 8: "lashes"},
 		# head_bc is the brow-painted variant — her MetaHuman ships NO eyebrow groom and
 		# none are baked into the skin, so brows are hand-painted onto a copy of the baked
