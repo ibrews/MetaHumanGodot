@@ -377,7 +377,9 @@ func _ready() -> void:
 	var vp := get_viewport()
 	vp.positional_shadow_atlas_size = 4096
 	vp.positional_shadow_atlas_16_bits = false
-	_char_key = OS.get_environment("RELEASE_CHAR") if OS.has_environment("RELEASE_CHAR") else "guy"
+	# Default launch character is HER (MH_Explainer) so the tool opens straight into her
+	# tuned moonlight look; RELEASE_CHAR=guy still overrides for the guy / headless QA.
+	_char_key = OS.get_environment("RELEASE_CHAR") if OS.has_environment("RELEASE_CHAR") else "her"
 	if not PROFILES.has(_char_key):
 		_char_key = "guy"
 	_profile = PROFILES[_char_key]
@@ -733,20 +735,24 @@ func _set_body_anim(on: bool) -> void:
 				_character.position = _char_rest_pos
 				_character.rotation.y = deg_to_rad(p.model_yaw)
 
-# Subtle leg weight-shift: counter-phase knee bend + tiny pelvis roll, composed on top of
-# the body idle (we multiply onto the current animated pose each frame). Very low amplitude.
+# Subtle leg weight-shift: a gentle knee bend composed on top of the body idle.
+# CRITICAL: base each rotation on the bone's REST pose, NOT the live pose. The body
+# idle animation does NOT key the calf bones, so reading the live pose and multiplying
+# a delta each frame COMPOUNDS — the calves spun right around ("legs below the knees
+# spinning"). Rest-based is bounded: a fixed ±deg sway, never accumulating. The pelvis
+# IS keyed by the idle (it re-resets each frame), so it composes without compounding.
 func _update_leg_idle(delta: float) -> void:
 	_leg_clock += delta
 	var t := _leg_clock
 	if _calf_l_idx >= 0:
-		var rl: Quaternion = _body_skeleton.get_bone_pose_rotation(_calf_l_idx)
-		_body_skeleton.set_bone_pose_rotation(_calf_l_idx, rl * Quaternion(Vector3(1, 0, 0), sin(t * 1.1) * deg_to_rad(2.2)))
+		var rest_l: Quaternion = _body_skeleton.get_bone_rest(_calf_l_idx).basis.get_rotation_quaternion()
+		_body_skeleton.set_bone_pose_rotation(_calf_l_idx, rest_l * Quaternion(Vector3(1, 0, 0), (0.5 + 0.5 * sin(t * 1.0)) * deg_to_rad(1.6)))
 	if _calf_r_idx >= 0:
-		var rr: Quaternion = _body_skeleton.get_bone_pose_rotation(_calf_r_idx)
-		_body_skeleton.set_bone_pose_rotation(_calf_r_idx, rr * Quaternion(Vector3(1, 0, 0), sin(t * 1.1 + PI) * deg_to_rad(2.2)))
+		var rest_r: Quaternion = _body_skeleton.get_bone_rest(_calf_r_idx).basis.get_rotation_quaternion()
+		_body_skeleton.set_bone_pose_rotation(_calf_r_idx, rest_r * Quaternion(Vector3(1, 0, 0), (0.5 + 0.5 * sin(t * 1.0 + PI)) * deg_to_rad(1.6)))
 	if _pelvis_idx >= 0:
 		var rp: Quaternion = _body_skeleton.get_bone_pose_rotation(_pelvis_idx)
-		_body_skeleton.set_bone_pose_rotation(_pelvis_idx, rp * Quaternion(Vector3(0, 0, 1), sin(t * 1.1) * deg_to_rad(1.0)))
+		_body_skeleton.set_bone_pose_rotation(_pelvis_idx, rp * Quaternion(Vector3(0, 0, 1), sin(t * 1.0) * deg_to_rad(0.8)))
 
 func _reset_leg_bones() -> void:
 	if _body_skeleton == null: return
