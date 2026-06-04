@@ -38,7 +38,7 @@ extends Node3D
 # not code.
 const PROFILES := {
 	"her": {
-		"label": "Her — MH_Explainer",
+		"label": "Gal — MH_Gal",
 		"glb": "res://character_explainer.glb",
 		# Wire by SURFACE INDEX, not material name (the MetaHuman bake material names
 		# are misleading: surface 0 is "..Teeth_Baked.." but is the MAIN face skin,
@@ -80,7 +80,7 @@ const PROFILES := {
 		"default_preset": "her__moonlight",
 	},
 	"guy": {
-		"label": "Guy — MH_Test",
+		"label": "Guy — MH_Guy",
 		"glb": "res://character.glb",
 		"face_mode": "index",                      # MetaHumanFace per-surface-index map
 		"face_mesh_name": "MetaHumanFace",
@@ -201,9 +201,15 @@ var _static_idle_on := false
 var _static_idle_clock := 0.0
 var _char_rest_pos := Vector3.ZERO
 
-# Live light-colour cycling (the "Cycle light colours" demo toggle).
+# Live light-colour cycling (the "Cycle light colours" animation toggle).
 var _color_cycle := false
 var _color_cycle_clock := 0.0
+
+# Per-character LOOK memory: char_key -> captured {p copy + orbit camera}. Lighting/skin/
+# camera start at the character's default preset the FIRST time it's shown, but any
+# adjustments are remembered when you toggle away and restored when you toggle back.
+# (The animation TOGGLES below are a separate layer that persists globally across switches.)
+var _char_look := {}
 
 # Faked iris gaze for boneless eyes (HER): the eye shader's iris_offset is driven
 # instead of rotating FACIAL_*_Eye bones (which her static face mesh doesn't have).
@@ -379,9 +385,8 @@ func _ready() -> void:
 	var vp := get_viewport()
 	vp.positional_shadow_atlas_size = 4096
 	vp.positional_shadow_atlas_16_bits = false
-	# Default launch character is HER (MH_Explainer) so the tool opens straight into her
-	# tuned moonlight look; RELEASE_CHAR=guy still overrides for the guy / headless QA.
-	_char_key = OS.get_environment("RELEASE_CHAR") if OS.has_environment("RELEASE_CHAR") else "her"
+	# Default launch character is the guy (MH_Guy); RELEASE_CHAR=her overrides.
+	_char_key = OS.get_environment("RELEASE_CHAR") if OS.has_environment("RELEASE_CHAR") else "guy"
 	if not PROFILES.has(_char_key):
 		_char_key = "guy"
 	_profile = PROFILES[_char_key]
@@ -1098,37 +1103,96 @@ func _load_character(custom_path := "") -> void:
 	else:
 		_wire_custom(node)
 	_collect_blendshapes(node)
-	# Face emote animation (blend-shape performance). Built but NOT played; the
-	# "Play animation" toggle drives it.
 	var aabb3 := _world_aabb(node)
 	_head_world = Vector3(0.0, aabb3.position.y + aabb3.size.y - 0.12, 0.05)
-	_build_face_animation(node)
-	# Body idle + face-follow (item 2). Resolve the BODY skeleton, grab the imported
-	# idle AnimationPlayer (stopped until the toggle), then bind the separate face
-	# armature to the body 'head' bone. All guarded — her GLB has no idle/face split,
-	# so this no-ops gracefully and she stays static. Bind must happen with the idle
-	# STOPPED so the rest pose is captured cleanly (node already scaled/placed/yawed).
+	# Resolve skeletons + eye bones FIRST — the groom-attach needs the face skeleton's
+	# head bone, and the face emote must be built AFTER the grooms are reparented so its
+	# blend-shape tracks resolve to the grooms' new node paths.
 	_resolve_body_skeleton(node)
 	_find_body_anim_player(node)
-	_resolve_eye_bones(node)          # item 3: FACIAL_L/R_Eye for bone-driven gaze
+	_resolve_eye_bones(node)          # FACIAL_L/R_Eye for bone-driven gaze + the head bone
+	# Grooms (hair/beard/mustache/eyebrow cards) were object-parented to the FaceArmature
+	# NODE, so they did NOT follow the head BONE — they detached the moment the body idle /
+	# LeaderPose bobbed the head. Reparent each under a BoneAttachment3D on the face head
+	# bone so they ride head motion (their shape keys still deform for expressions).
+	_attach_grooms_to_head()
+	# Face emote animation (blend-shape performance). Built but NOT played; the toggle drives it.
+	_build_face_animation(node)
 	_bind_face_to_head_bone(node)
 	_build_leader_pose_map()          # seam fix: shared body↔face bones for the LeaderPose copy
 	_set_hair_visible(_hair_visible)  # carry the "Show hair" toggle across loads/switches
 
 func _switch_character() -> void:
+	# 1. Remember the LEAVING character's current look (lighting/skin/eyes/camera).
+	_char_look[_char_key] = _capture_look()
+	# 2. Capture the persistent ANIMATION-TOGGLE layer — it carries across the switch.
+	var toggles := _capture_toggles()
+	# 3. Advance to the next character.
 	var i := CHAR_ORDER.find(_char_key)
 	_char_key = CHAR_ORDER[(i + 1) % CHAR_ORDER.size()]
 	_profile = PROFILES[_char_key]
-	_load_preset_file("%s/%s.json" % [PRESET_DIR, _profile.get("default_preset", "")])
+	# 4. Lighting/look: restore this character's REMEMBERED look if we've seen it before,
+	#    else fall back to its default preset (first-time = defaults).
+	if _char_look.has(_char_key):
+		_restore_look(_char_look[_char_key])
+	else:
+		_load_preset_file("%s/%s.json" % [PRESET_DIR, _profile.get("default_preset", "")])
+	# 5. Load the mesh (this resets the per-load toggle member-vars to off).
 	_load_character()
 	_reapply_blendshapes()   # carry the current ARKit pose across the character swap
 	_apply_overlay_image()   # show THIS character's UE reference (or none)
 	_rebuild_bs_panel()
 	_refresh_preset_list()
+	# 6. Re-apply the persistent toggle layer on top of the loaded look.
+	_apply_toggles(toggles)
 	_refresh_controls()
 	_apply_all()
 	if _char_btn: _char_btn.text = "Character: " + _profile["label"]
 	_set_status("Loaded " + _profile["label"])
+
+# ---- per-character look memory + persistent toggle layer --------------------
+# Capture the current LOOK (everything that is NOT an animation toggle): the full p dict
+# (deep copy — Colors are values) + the orbit camera. eye_alive/eye_look_cam live in p but
+# are treated as toggles (see _capture/_apply_toggles), which win on restore.
+func _capture_look() -> Dictionary:
+	return {
+		"p": p.duplicate(true),
+		"oy": _orbit_yaw, "op": _orbit_pitch, "od": _orbit_dist,
+		"of": _orbit_fov, "ot": _orbit_target,
+	}
+
+func _restore_look(s: Dictionary) -> void:
+	var sp: Dictionary = s.get("p", {})
+	for k in sp.keys():
+		if p.has(k): p[k] = sp[k]
+	_orbit_yaw = s.get("oy", _orbit_yaw); _orbit_pitch = s.get("op", _orbit_pitch)
+	_orbit_dist = s.get("od", _orbit_dist); _orbit_fov = s.get("of", _orbit_fov)
+	_orbit_target = s.get("ot", _orbit_target)
+	_start_orbit_yaw = _orbit_yaw; _start_orbit_pitch = _orbit_pitch
+	_start_orbit_dist = _orbit_dist; _start_orbit_fov = _orbit_fov
+	_start_orbit_target = _orbit_target
+	if _camera and not OS.has_environment("RELEASE_CAPTURE"):
+		_camera.fov = _orbit_fov; _update_orbit_camera()
+
+# The animation toggles persist GLOBALLY across character switches (per the request).
+func _capture_toggles() -> Dictionary:
+	return {
+		"face": _face_anim_on, "body": _body_anim_on, "hero": _hero_cam,
+		"turntable": _turntable, "cycle": _color_cycle, "hair": _hair_visible,
+		"eye_alive": bool(p.get("eye_alive", true)), "eye_look_cam": bool(p.get("eye_look_cam", true)),
+	}
+
+func _apply_toggles(t: Dictionary) -> void:
+	# eye_alive / eye_look_cam are part of p but behave as persistent toggles → set them
+	# BEFORE the camera/eye drivers run, overriding whatever the restored look carried.
+	p.eye_alive = t.get("eye_alive", true)
+	p.eye_look_cam = t.get("eye_look_cam", true)
+	_turntable = bool(t.get("turntable", false))
+	_set_hair_visible(bool(t.get("hair", true)))
+	_set_face_anim(bool(t.get("face", false)))
+	_set_body_anim(bool(t.get("body", false)))
+	_set_hero_cam(bool(t.get("hero", false)))
+	_set_color_cycle(bool(t.get("cycle", false)))   # if on, lighting stays ANIMATED across the switch
 
 # Re-drive every stored ARKit value onto the freshly-loaded character's meshes.
 # _bs_values persists across _switch_character / _load_character (only _bs_map is
@@ -1260,6 +1324,33 @@ func _set_hair_visible(on: bool) -> void:
 		if is_instance_valid(m): (m as MeshInstance3D).visible = on
 	for b in _hair_back_meshes:
 		if is_instance_valid(b): (b as MeshInstance3D).visible = on
+
+# Reparent the groom cards (+ backing shells) under a BoneAttachment3D on the face skeleton's
+# `head` bone so they FOLLOW head motion. They were object-parented to the FaceArmature NODE,
+# which stays put while the body idle / LeaderPose drive the head BONE — so they detached the
+# moment she/he moved. The BoneAttachment3D rides the bone; the grooms' own blend-shape
+# (expression) deformation still works locally. Idempotent (skips already-attached).
+func _attach_grooms_to_head() -> void:
+	if _face_eye_skel == null or _face_eye_skel.find_bone("head") < 0:
+		return
+	var to_attach: Array = []
+	to_attach.append_array(_hair_meshes)
+	to_attach.append_array(_hair_back_meshes)
+	var n := 0
+	for g in to_attach:
+		if not (g is Node3D) or not is_instance_valid(g):
+			continue
+		var n3 := g as Node3D
+		if n3.get_parent() is BoneAttachment3D:
+			continue
+		var ba := BoneAttachment3D.new()
+		ba.name = n3.name + "_HeadBA"
+		_face_eye_skel.add_child(ba)
+		ba.bone_name = "head"
+		n3.reparent(ba, true)   # keep world transform — grooms stay put, now ride the head bone
+		n += 1
+	if n > 0:
+		print("[release] attached %d groom mesh(es) to the head bone" % n)
 
 func _make_skin(bc: String, nn: String, srmf: String, scatter: String) -> ShaderMaterial:
 	var mat := ShaderMaterial.new()
@@ -1698,18 +1789,35 @@ func _setup_ui() -> void:
 	_orbit_slider(vb, "Target Z (m)", func(v): _orbit_target.z = v, func(): return _orbit_target.z, -2.0, 2.0, 0.005)
 	_slider(vb, "dof_focus", "DOF focus (m)", 0.1, 8.0, 0.05)
 	_slider(vb, "dof_blur",  "DOF blur",      0.0, 0.5, 0.005)
+	# Animation toggles — these persist across character switches (set_pressed_no_signal +
+	# a refresher so the box reflects the carried-over state after a swap).
 	var tt_cb := CheckBox.new(); tt_cb.text = "Turntable (rotate character)"
+	tt_cb.button_pressed = _turntable
 	tt_cb.toggled.connect(func(on): _turntable = on)
 	_style_checkbox(tt_cb); vb.add_child(tt_cb)
+	_refreshers.append(func(): tt_cb.set_pressed_no_signal(_turntable))
 	var hero_cb := CheckBox.new(); hero_cb.text = "Hero camera (ping-pong push-in)"
+	hero_cb.button_pressed = _hero_cam
 	hero_cb.toggled.connect(func(on): _set_hero_cam(on))
 	_style_checkbox(hero_cb); vb.add_child(hero_cb)
+	_refreshers.append(func(): hero_cb.set_pressed_no_signal(_hero_cam))
 	var face_cb := CheckBox.new(); face_cb.text = "Face animation (emote)"
+	face_cb.button_pressed = _face_anim_on
 	face_cb.toggled.connect(func(on): _set_face_anim(on))
 	_style_checkbox(face_cb); vb.add_child(face_cb)
+	_refreshers.append(func(): face_cb.set_pressed_no_signal(_face_anim_on))
 	var body_cb := CheckBox.new(); body_cb.text = "Body animation (idle + legs)"
+	body_cb.button_pressed = _body_anim_on
 	body_cb.toggled.connect(func(on): _set_body_anim(on))
 	_style_checkbox(body_cb); vb.add_child(body_cb)
+	_refreshers.append(func(): body_cb.set_pressed_no_signal(_body_anim_on))
+	# Lighting animation — same toggle group. When ON, the lighting stays ANIMATED (and
+	# persists) across character switches; when OFF, lighting follows each character's preset.
+	var lcyc_cb := CheckBox.new(); lcyc_cb.text = "Animate lighting (cycle colours)"
+	lcyc_cb.button_pressed = _color_cycle
+	lcyc_cb.toggled.connect(func(on): _set_color_cycle(on))
+	_style_checkbox(lcyc_cb); vb.add_child(lcyc_cb)
+	_refreshers.append(func(): lcyc_cb.set_pressed_no_signal(_color_cycle))
 
 	_section(vb, "SCENE")
 	_slider(vb, "model_yaw", "Model yaw", 0.0, 360.0, 0.5)
@@ -1743,12 +1851,7 @@ func _setup_ui() -> void:
 	_color(vb, "amb_col", "Ambient colour")
 	_color(vb, "catch_col", "Catchlight colour")
 	_color(vb, "bg_col", "Background colour")
-	# Animate the light colours through the hue wheel (key/fill/rim/ambient + backdrop) for a
-	# lively colour-shifting demo. Non-destructive: toggling off restores the preset colours.
-	var cyc := CheckBox.new(); cyc.text = "Cycle light colours (animate)"
-	cyc.toggled.connect(func(on): _set_color_cycle(on))
-	_style_checkbox(cyc); vb.add_child(cyc)
-	_refreshers.append(func(): cyc.set_pressed_no_signal(_color_cycle))
+	# ("Animate lighting" toggle lives with the other animation toggles in the CAMERA section.)
 
 	_section(vb, "SKIN (face + body)")
 	_color(vb, "skin_tint", "Skin colour (tint)")
