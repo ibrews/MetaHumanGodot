@@ -192,6 +192,8 @@ var _hair_back_mats: Array[ShaderMaterial] = []
 var _eye_mats: Array[ShaderMaterial] = []
 var _lash_mats: Array = []                  # eyelash card materials (alpha-clipped)
 var _hair_meshes: Array[MeshInstance3D] = []
+var _hair_back_meshes: Array = []            # backing-shell instances (toggled with the hair)
+var _hair_visible := true                    # "Show hair" toggle — all groom cards + backings
 
 # Static-character idle (HER explainer GLB has no skeleton/anim) — a gentle rigid
 # sway/breath/weight-shift driven on the whole character node.
@@ -414,6 +416,9 @@ func _ready() -> void:
 		_load_character(OS.get_environment("RELEASE_CUSTOM"))
 		_rebuild_bs_panel(); _refresh_controls()
 	_apply_all()
+	# Headless QA hook: RELEASE_HAIR=0 hides all hair grooms (the "Show hair" toggle).
+	if OS.has_environment("RELEASE_HAIR"):
+		_set_hair_visible(OS.get_environment("RELEASE_HAIR") != "0")
 	# Headless QA hooks for the toggles. RELEASE_ANIM_SEEK sets the face-anim time.
 	if OS.has_environment("RELEASE_ANIM"):
 		_set_face_anim(true); _set_body_anim(true)
@@ -1033,7 +1038,7 @@ func _clear_character() -> void:
 		_character.queue_free()
 	_character = null
 	_skin_mats.clear(); _hair_mats.clear(); _hair_back_mats.clear()
-	_eye_mats.clear(); _lash_mats.clear(); _hair_meshes.clear()
+	_eye_mats.clear(); _lash_mats.clear(); _hair_meshes.clear(); _hair_back_meshes.clear()
 	_static_idle_on = false; _static_idle_clock = 0.0; _iris_off = Vector2.ZERO
 	_bs_map.clear()
 	# tear down per-character animation state
@@ -1108,6 +1113,7 @@ func _load_character(custom_path := "") -> void:
 	_resolve_eye_bones(node)          # item 3: FACIAL_L/R_Eye for bone-driven gaze
 	_bind_face_to_head_bone(node)
 	_build_leader_pose_map()          # seam fix: shared body↔face bones for the LeaderPose copy
+	_set_hair_visible(_hair_visible)  # carry the "Show hair" toggle across loads/switches
 
 func _switch_character() -> void:
 	var i := CHAR_ORDER.find(_char_key)
@@ -1244,6 +1250,16 @@ func _wire_hair(mi: MeshInstance3D, entry: Array) -> void:
 			backing.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 			mi.add_sibling(backing)
 			backing.global_transform = mi.global_transform
+			_hair_back_meshes.append(backing)
+
+# Show/hide ALL hair-card grooms (scalp hair + beard/mustache/eyebrows on the guy) and their
+# backing shells. Toggleable live; re-applied after a character switch so it persists.
+func _set_hair_visible(on: bool) -> void:
+	_hair_visible = on
+	for m in _hair_meshes:
+		if is_instance_valid(m): (m as MeshInstance3D).visible = on
+	for b in _hair_back_meshes:
+		if is_instance_valid(b): (b as MeshInstance3D).visible = on
 
 func _make_skin(bc: String, nn: String, srmf: String, scatter: String) -> ShaderMaterial:
 	var mat := ShaderMaterial.new()
@@ -1751,6 +1767,13 @@ func _setup_ui() -> void:
 	_toggle(vb, "double_spec", "Double specular")
 
 	_section(vb, "HAIR")
+	# Show/hide ALL hair grooms for the current character (her: scalp bob; the guy: hair +
+	# beard + mustache + eyebrow cards). Persists across character switches.
+	var hair_cb := CheckBox.new(); hair_cb.text = "Show hair"
+	hair_cb.button_pressed = _hair_visible
+	hair_cb.toggled.connect(func(on): _set_hair_visible(on))
+	_style_checkbox(hair_cb); vb.add_child(hair_cb)
+	_refreshers.append(func(): hair_cb.set_pressed_no_signal(_hair_visible))
 	_color(vb, "hair_col", "Hair colour")
 	_slider(vb, "hair_thresh", "Alpha threshold", 0.0, 0.6, 0.005)
 	_slider(vb, "hair_root", "Root darkening", 0.0, 1.0, 0.01)
