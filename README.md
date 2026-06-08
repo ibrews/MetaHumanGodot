@@ -38,8 +38,8 @@ present and unchanged) into one "best of both worlds" look-dev environment:
   (from the model's own baked textures) / eyes / hair by material-name heuristics.
   Degrades gracefully on unrecognized models — it still loads and renders, and the
   skin sliders drive whatever skin surfaces it could identify.
-- **52 ARKit blendshapes** — a toggleable, scrollable panel (press **B**) with one
-  named slider per canonical ARKit shape. Each drives `set_blend_shape_value`
+- **52 ARKit blendshapes** — a scrollable panel **shown by default** (toggle with
+  **B**) with one named slider per canonical ARKit shape. Each drives `set_blend_shape_value`
   across **every** mesh carrying that shape, so the face *and* the propagated
   groom cards (beard/brows/'stache) deform together. Shapes a character lacks are
   shown disabled. *(The male character ships with the full set baked; see
@@ -51,7 +51,8 @@ present and unchanged) into one "best of both worlds" look-dev environment:
   (key / key-rect / fill / rim / ambient point / catchlight), exposure / glow /
   env-ambient, **AgX** tonemap, **SSIL**, colour balance (saturation / brightness /
   contrast), model yaw, and a UE-frame-0 overlay. Every slider has a type-in box
-  (values can exceed the slider range).
+  (values can exceed the slider range). An opt-in **hair rake** light skims the
+  hairline so the hair throws a crisp shadow onto the forehead.
 - **Animation** — an independent **face emote** (neutral → smile → surprise → frown
   → **nose scrunch** → smile, so the skin actually contorts), a **body idle** (a
   rigged weight-shift on characters with a skeleton, or a gentle procedural sway on

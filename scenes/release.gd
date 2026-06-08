@@ -76,6 +76,9 @@ const PROFILES := {
 		"sclera_tpl": "exp_eye_sclera_%s_bc.png", "sclera_n_tpl": "exp_eye_sclera_%s_n.png",
 		"hair_atlases": [["Hair_", "exp_hair_atlas.png", Color(0.20, 0.13, 0.075)]],
 		"outfit_color": Color(0.86, 0.87, 0.90),   # white tee (contrast vs the guy)
+		# Per-character anti-poke inflate (mesh-local units): her bust/shoulder seams need a
+		# much bigger shell than the guy's to stop skin poking through (see _load_preset_file).
+		"outfit_grow": 0.5,
 		"overlay_img": "her_ue_ref0.png",          # her UE moonlight cinecam render (2026-06-01)
 		"default_preset": "her__moonlight",
 	},
@@ -103,6 +106,7 @@ const PROFILES := {
 			["Moustache_", "mustache_attr.png", Color(0.28, 0.205, 0.115)],
 		],
 		"outfit_color": Color(0.045, 0.05, 0.06),   # black tee (contrast vs her white)
+		"outfit_grow": 0.1,                          # per-character anti-poke inflate (see _load_preset_file)
 		"overlay_img": "guy_ue_ref0.png",           # UE moonlight cinecam render (black shirt)
 		"default_preset": "guy__moonlight",
 	},
@@ -186,6 +190,8 @@ var _env: Environment
 var _backdrop_mat: ShaderMaterial
 var _lights := {}
 var _catch: OmniLight3D
+var _rake: SpotLight3D                        # opt-in hard "hair rake" — skims the hairline so hair throws a crisp forehead shadow (off by default; doesn't disturb the moonlight rig)
+var _rake_on := false
 var _skin_mats: Array[ShaderMaterial] = []
 var _hair_mats: Array[ShaderMaterial] = []
 var _hair_back_mats: Array[ShaderMaterial] = []
@@ -220,6 +226,9 @@ var _bs_values := {}       # shape name -> float (current)
 
 var _overlay: TextureRect
 var _overlay_available := false
+var _intro_tween: Tween                      # one-shot "reference → live character" reveal fade
+var _intro_active := false                    # true WHILE the reveal fades — eyes held straight ahead
+const INTRO_FADE_SEC := 3.0                    # reveal fade length; "alive eyes" resume after this
 var _panel: Control
 var _panel_handle: Panel
 var _panel_collapse_btn: Button
@@ -289,6 +298,7 @@ var _start_orbit_dist := 1.5
 var _start_orbit_fov := 28.0
 var _start_orbit_target := Vector3(0.0, 1.33, 0.0)
 var _outfit_mats: Array = []
+var _outfit_meshes: Array[MeshInstance3D] = []   # outfit mesh instances (for the clothes-off seam diagnostic)
 var _body_skin_mat: ShaderMaterial   # the BODY skin material (for the anti-poke vertex shrink)
 var _face_off := Transform3D.IDENTITY   # legacy (rigid follow); unused by the LeaderPose path
 # LeaderPose emulation (collar-seam fix). The face mesh (head + neck + bust-cap) is skinned
@@ -413,6 +423,12 @@ func _ready() -> void:
 		if fc.size() == 3:
 			p.eye_fx = float(fc[0]); p.eye_fy = float(fc[1]); p.eye_fz = float(fc[2])
 			_refreeze_abs_point(); _update_eye_focus()
+	# QA: sweep the eye look without rewriting a preset — overrides applied before _apply_all.
+	if OS.has_environment("RELEASE_EYE_RADIUS"): p.iris_radius = _envf("RELEASE_EYE_RADIUS", p.iris_radius)
+	if OS.has_environment("RELEASE_EYE_SCALE"): p.iris_scale = _envf("RELEASE_EYE_SCALE", p.iris_scale)
+	if OS.has_environment("RELEASE_EYE_TINT"): p.sclera_tint = _envf("RELEASE_EYE_TINT", p.sclera_tint)
+	if OS.has_environment("RELEASE_EYE_ROUGH"): p.eye_rough = _envf("RELEASE_EYE_ROUGH", p.eye_rough)
+	if OS.has_environment("RELEASE_EYE_CC"): p.eye_clearcoat = _envf("RELEASE_EYE_CC", p.eye_clearcoat)
 	# Headless QA hook: RELEASE_TOGGLE=1 exercises the live character switch.
 	if OS.has_environment("RELEASE_TOGGLE"):
 		_switch_character()
@@ -421,9 +437,17 @@ func _ready() -> void:
 		_load_character(OS.get_environment("RELEASE_CUSTOM"))
 		_rebuild_bs_panel(); _refresh_controls()
 	_apply_all()
+	_play_intro_reveal()   # launch: reveal the MetaHuman reference, then fade to the live render
 	# Headless QA hook: RELEASE_HAIR=0 hides all hair grooms (the "Show hair" toggle).
 	if OS.has_environment("RELEASE_HAIR"):
 		_set_hair_visible(OS.get_environment("RELEASE_HAIR") != "0")
+	# Seam-diagnostic hooks: RELEASE_NOCLOTH=1 hides the outfit so the raw bust-cap <-> body
+	# interpenetration is directly visible; RELEASE_RAKE=1 turns on the opt-in hard hair rake.
+	if OS.has_environment("RELEASE_NOCLOTH") and OS.get_environment("RELEASE_NOCLOTH") != "0":
+		for om in _outfit_meshes:
+			if is_instance_valid(om): om.visible = false
+	if OS.has_environment("RELEASE_RAKE") and OS.get_environment("RELEASE_RAKE") != "0":
+		_set_rake(true)
 	# Headless QA hooks for the toggles. RELEASE_ANIM_SEEK sets the face-anim time.
 	if OS.has_environment("RELEASE_ANIM"):
 		_set_face_anim(true); _set_body_anim(true)
@@ -492,8 +516,8 @@ func _setup_world() -> void:
 	_env.glow_intensity = p.glow
 	_env.glow_bloom = 0.15
 	_env.ssao_enabled = true
-	_env.ssao_radius = 0.3
-	_env.ssao_intensity = 0.7
+	_env.ssao_radius = 0.4         # a touch wider so the gap under the hairline (floating cards) registers
+	_env.ssao_intensity = 0.7      # live-scaled by "Shadow strength" in _apply_all
 	_env.ssil_enabled = true
 	_env.ssil_radius = 5.0
 	_env.ssil_intensity = 1.0
@@ -552,9 +576,12 @@ func _spot(nm: String, ue_loc: Array, pitch: float, yaw: float, col: Color,
 	s.shadow_enabled = shadow; s.light_specular = 0.4
 	if shadow:
 		# Tame shadow acne/shimmer (the source of the flicker) + soften the edge a touch.
-		s.shadow_bias = 0.025
-		s.shadow_normal_bias = 0.6   # low, so contact shadows (hair on forehead) actually land
-		s.shadow_blur = 1.1
+		# normal_bias is kept LOW: the hair cards float only ~mm off the scalp/forehead, and a
+		# high normal_bias pushes their thin contact shadow right off the face (which is why
+		# "hair never shadows the face" — the shadow was being biased away, not missing).
+		s.shadow_bias = 0.02
+		s.shadow_normal_bias = 0.25
+		s.shadow_blur = 1.3
 	add_child(s); return s
 
 func _setup_lights() -> void:
@@ -577,6 +604,23 @@ func _setup_lights() -> void:
 	_catch.omni_range = 5.0; _catch.omni_attenuation = 1.0
 	_catch.shadow_enabled = false
 	add_child(_catch)
+	# Opt-in HARD hair rake (Task 2): a focused, shadow-casting spot placed front-high on the
+	# CAMERA side and aimed to skim the hairline, so the hair cards throw a crisp shadow DOWN the
+	# forehead. OFF by default so it never disturbs the ported moonlight key/fill/rim; positioned
+	# per-frame in _update_rake() relative to the current view, so it rakes from any orbit angle.
+	_rake = SpotLight3D.new(); _rake.name = "HairRake"
+	_rake.light_color = Color(0.95, 0.96, 1.0)
+	_rake.light_energy = 1.8   # low: the rake's value is the SHADOW it throws, not adding fill — high energy washes the forehead and kills the shadow contrast
+	_rake.spot_angle = 26.0
+	_rake.spot_angle_attenuation = 0.5
+	_rake.spot_range = 6.0; _rake.spot_attenuation = 0.7
+	_rake.light_specular = 0.2
+	_rake.shadow_enabled = true
+	_rake.shadow_bias = 0.02
+	_rake.shadow_normal_bias = 0.16   # even lower than the rig spots — its whole job is the thin hairline contact shadow
+	_rake.shadow_blur = 0.9
+	_rake.visible = false
+	add_child(_rake)
 
 func _setup_camera() -> void:
 	_camera = Camera3D.new(); _camera.name = "Camera3D"
@@ -624,6 +668,25 @@ func _update_orbit_camera() -> void:
 	# headless QA override (e.g. RELEASE_PAN=0 centres the subject for diagnostics).
 	_camera.h_offset = _envf("RELEASE_PAN", float(p.get("view_pan", -0.22)))
 
+# Position the opt-in hair rake front-high on the CAMERA side, aimed at the forehead (_head_world),
+# so the hair cards skim a crisp shadow down the brow. Camera-relative → it rakes from any orbit
+# angle and is unaffected by model_yaw (the camera always views the lit face side).
+func _update_rake() -> void:
+	if _rake == null or not _rake.visible or _camera == null: return
+	var head: Vector3 = _head_world
+	var to_cam: Vector3 = _camera.global_transform.origin - head
+	to_cam.y = 0.0
+	to_cam = to_cam.normalized() if to_cam.length() > 0.001 else Vector3(0, 0, 1)
+	var side: Vector3 = to_cam.cross(Vector3.UP).normalized()   # graze ACROSS the hairline, not straight down
+	# Higher + a touch to the side + less frontal = a steeper graze so the hairline throws LONG
+	# shadows down the forehead instead of a flat frontal fill. Tunable via RELEASE_RAKE_* for sweeps.
+	var pos: Vector3 = head \
+		+ to_cam * _envf("RELEASE_RAKE_FWD", 0.40) \
+		+ Vector3(0, _envf("RELEASE_RAKE_UP", 0.62), 0) \
+		+ side * _envf("RELEASE_RAKE_SIDE", 0.22)
+	var fwd: Vector3 = (head - pos).normalized()
+	_rake.look_at_from_position(pos, head, _stable_up(fwd))
+
 func _process(delta: float) -> void:
 	# Turntable spins the MODEL (composes with hero cam + orbit). Gated off while the
 	# body idle plays — the bind-basis face-follow assumes a fixed node yaw, so a live
@@ -660,10 +723,16 @@ func _process(delta: float) -> void:
 	else:
 		_update_orbit_camera()
 
+	# Opt-in hair rake follows the view (front-high, camera side) so it skims the hairline.
+	if _rake_on:
+		_update_rake()
+
 	# Eyes: bone-driven gaze when the face rig HAS eye bones (the guy). Otherwise FAKE gaze by
 	# driving the eye shader's iris_offset — HER explainer face is a static bake with no
 	# FACIAL_*_Eye bones, so this is what makes "her eyes move" (look-at-camera + darts + blinks).
-	if _face_eye_skel != null and _eye_bone_l >= 0:
+	if _intro_active:
+		_eyes_straight_ahead()              # neutral forward gaze during the reveal (no double pupils)
+	elif _face_eye_skel != null and _eye_bone_l >= 0:
 		_update_eyes(delta)
 	elif not _eye_mats.is_empty():
 		_update_eyes_iris(delta)
@@ -696,6 +765,13 @@ func _update_hero_camera() -> void:
 # ---- animation (face emote + body idle, independent toggles) ----------------
 func _anim_active() -> bool:
 	return _body_anim_on or _face_anim_on
+
+func _set_rake(on: bool) -> void:
+	_rake_on = on
+	if _rake:
+		_rake.visible = on
+		if on: _rake.light_energy = _envf("RELEASE_RAKE_E", _rake.light_energy)   # quick energy sweeps
+	if on: _update_rake()
 
 func _set_hero_cam(on: bool) -> void:
 	_hero_cam = on
@@ -1055,7 +1131,7 @@ func _clear_character() -> void:
 	_face_eye_skel = null; _eye_bone_l = -1; _eye_bone_r = -1
 	_face_anim_on = false; _body_anim_on = false; _follow_active = false
 	_pelvis_idx = -1; _calf_l_idx = -1; _calf_r_idx = -1; _leg_clock = 0.0
-	_outfit_mats.clear(); _body_skin_mat = null
+	_outfit_mats.clear(); _outfit_meshes.clear(); _body_skin_mat = null
 
 func _load_character(custom_path := "") -> void:
 	_clear_character()
@@ -1148,6 +1224,7 @@ func _switch_character() -> void:
 	_refresh_controls()
 	_apply_all()
 	if _char_btn: _char_btn.text = "Character: " + _profile["label"]
+	_play_intro_reveal()   # switch: cross-dissolve from this character's MetaHuman reference
 	_set_status("Loaded " + _profile["label"])
 
 # ---- per-character look memory + persistent toggle layer --------------------
@@ -1178,7 +1255,7 @@ func _restore_look(s: Dictionary) -> void:
 func _capture_toggles() -> Dictionary:
 	return {
 		"face": _face_anim_on, "body": _body_anim_on, "hero": _hero_cam,
-		"turntable": _turntable, "cycle": _color_cycle, "hair": _hair_visible,
+		"turntable": _turntable, "cycle": _color_cycle, "hair": _hair_visible, "rake": _rake_on,
 		"eye_alive": bool(p.get("eye_alive", true)), "eye_look_cam": bool(p.get("eye_look_cam", true)),
 	}
 
@@ -1193,6 +1270,7 @@ func _apply_toggles(t: Dictionary) -> void:
 	_set_body_anim(bool(t.get("body", false)))
 	_set_hero_cam(bool(t.get("hero", false)))
 	_set_color_cycle(bool(t.get("cycle", false)))   # if on, lighting stays ANIMATED across the switch
+	_set_rake(bool(t.get("rake", false)))           # carry the opt-in hair rake across switches
 
 # Re-drive every stored ARKit value onto the freshly-loaded character's meshes.
 # _bs_values persists across _switch_character / _load_character (only _bs_map is
@@ -1249,6 +1327,7 @@ func _wire_materials(root: Node) -> void:
 			for s in range(mesh.get_surface_count()):
 				mi.set_surface_override_material(s, cloth)
 			_outfit_mats.append(cloth)
+			_outfit_meshes.append(mi)
 
 func _wire_face_by_index(mi: MeshInstance3D, skin, teeth, eye_r, eye_l, hide, lash = null) -> void:
 	var imap: Dictionary = _profile["face_index_map"]
@@ -1586,6 +1665,22 @@ func _update_eye_focus() -> void:
 	_aim_eye(_eye_bone_l, target)
 	_aim_eye(_eye_bone_r, target)
 
+# Force a neutral, PARALLEL straight-ahead gaze (no darts, no convergence) for BOTH eye rigs —
+# used during the intro reveal so the live pupils sit still on the static reference's pupils
+# (a converged or darting gaze shows as double pupils through the cross-dissolve).
+func _eyes_straight_ahead() -> void:
+	if _face_eye_skel != null and _eye_bone_l >= 0:
+		# Guy: aim both bone-eyes at a FAR forward point (far ⇒ parallel ⇒ no cross-eye convergence).
+		var fr: Array = _eye_gaze_frame()
+		var fwd: Vector3 = (fr[0] as Vector3) + (fr[1] as Basis) * Vector3(0.0, 0.0, 20.0)
+		_aim_eye(_eye_bone_l, fwd)
+		_aim_eye(_eye_bone_r, fwd)
+	elif not _eye_mats.is_empty():
+		# Gal: boneless face — centre the iris (offset zero = looking straight ahead).
+		_iris_off = Vector2.ZERO
+		for m in _eye_mats:
+			m.set_shader_parameter("iris_offset", Vector2.ZERO)
+
 # Unified per-frame eye driver.
 #  - Target = camera (if "Look at camera") else the manual focal point.
 #  - "Look at camera" also writes the camera's position back into the manual focal
@@ -1713,6 +1808,25 @@ func _apply_overlay_image() -> void:
 		_overlay.texture = null
 		p.overlay = 0.0
 	_overlay.modulate = Color(1, 1, 1, p.overlay)
+
+# Intro reveal: show THIS character's MetaHuman reference overlay at full opacity, then fade
+# it to zero over 3s — a soft "reference → live Godot character" cross-dissolve. Fired on
+# launch and on every Guy/Gal switch. Reuses the aligned _overlay (stretch/scoot already
+# applied by _apply_all) so the reference lines up with the render. No-op during headless
+# capture/smoke so QA frames stay clean.
+func _play_intro_reveal() -> void:
+	if _overlay == null or not _overlay_available: return
+	if OS.has_environment("RELEASE_CAPTURE") or OS.has_environment("RELEASE_SMOKE"): return
+	if _intro_tween and _intro_tween.is_valid(): _intro_tween.kill()
+	# Hold the eyes dead straight ahead for the whole reveal: "alive eyes" (saccadic darts +
+	# look-at-camera convergence) would dart the live pupils off the static reference's pupils
+	# mid-dissolve → a double-pupil ghost. Alive eyes resume when the fade ends (the callback).
+	_intro_active = true
+	_eyes_straight_ahead()
+	_overlay.modulate = Color(1, 1, 1, 1.0)
+	_intro_tween = create_tween()
+	_intro_tween.tween_property(_overlay, "modulate:a", 0.0, INTRO_FADE_SEC).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	_intro_tween.tween_callback(func(): _intro_active = false)
 
 # ---- UI ---------------------------------------------------------------------
 func _setup_ui() -> void:
@@ -1857,7 +1971,7 @@ func _setup_ui() -> void:
 	_color(vb, "skin_tint", "Skin colour (tint)")
 	_slider(vb, "skin_bright", "Skin lightness", 0.0, 2.5, 0.01)
 	_slider(vb, "shadow_strength", "Shadow strength (hair on face)", 0.0, 1.0, 0.01)
-	_slider(vb, "outfit_grow", "Outfit inflate (anti-poke) m", 0.0, 0.03, 0.0005)
+	_slider(vb, "outfit_grow", "Outfit inflate (anti-poke)", 0.0, 1.0, 0.01)
 	_slider(vb, "body_shrink", "Body tuck (anti-poke) m", 0.0, 0.02, 0.0005)
 	_slider(vb, "sss", "Subsurface", 0.0, 1.0, 0.01)
 	_slider(vb, "scatter", "Scatter strength", 0.0, 3.0, 0.01)
@@ -1877,6 +1991,14 @@ func _setup_ui() -> void:
 	hair_cb.toggled.connect(func(on): _set_hair_visible(on))
 	_style_checkbox(hair_cb); vb.add_child(hair_cb)
 	_refreshers.append(func(): hair_cb.set_pressed_no_signal(_hair_visible))
+	# Opt-in hard hair rake — a grazing front-high shadow-caster that makes the hair throw a
+	# crisp shadow onto the forehead/brow (most visible on her overhanging hairstyle). Off by
+	# default so it never disturbs the ported moonlight rig.
+	var rake_cb := CheckBox.new(); rake_cb.text = "Hair rake light (hairline shadow)"
+	rake_cb.button_pressed = _rake_on
+	rake_cb.toggled.connect(func(on): _set_rake(on))
+	_style_checkbox(rake_cb); vb.add_child(rake_cb)
+	_refreshers.append(func(): rake_cb.set_pressed_no_signal(_rake_on))
 	_color(vb, "hair_col", "Hair colour")
 	_slider(vb, "hair_thresh", "Alpha threshold", 0.0, 0.6, 0.005)
 	_slider(vb, "hair_root", "Root darkening", 0.0, 1.0, 0.01)
@@ -2062,7 +2184,7 @@ func _build_bs_panel(layer: CanvasLayer) -> void:
 	_bs_panel.anchor_left = 1.0; _bs_panel.anchor_right = 1.0
 	_bs_panel.anchor_top = 0.0; _bs_panel.anchor_bottom = 1.0
 	_bs_panel.offset_left = -_bs_width; _bs_panel.offset_right = 0.0
-	_bs_panel.visible = false
+	_bs_panel.visible = true   # ARKit panel shown by default (hidden during RELEASE_CAPTURE by _hide_chrome)
 	_bs_panel.clip_contents = true
 	layer.add_child(_bs_panel)
 	_build_bs_handle(layer)
@@ -2180,7 +2302,7 @@ func _build_bs_handle(layer: CanvasLayer) -> void:
 	h.gui_input.connect(func(ev):
 		if ev is InputEventMouseButton and (ev as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT:
 			_bs_dragging = (ev as InputEventMouseButton).pressed)
-	h.visible = false
+	h.visible = true   # matches the panel default-on
 	layer.add_child(h); _bs_handle = h
 	var cb := Button.new(); cb.name = "BsCollapse"; cb.text = "››"
 	cb.tooltip_text = "Collapse / expand the ARKit panel"
@@ -2188,7 +2310,7 @@ func _build_bs_handle(layer: CanvasLayer) -> void:
 	cb.offset_left = -_bs_width - 50.0; cb.offset_top = 12.0
 	cb.offset_right = -_bs_width - 16.0; cb.offset_bottom = 40.0
 	cb.pressed.connect(_toggle_bs_collapse)
-	cb.visible = false
+	cb.visible = true   # matches the panel default-on
 	layer.add_child(cb); _bs_collapse_btn = cb
 
 func _set_bs_width(w: float) -> void:
@@ -2222,6 +2344,10 @@ func _apply_all() -> void:
 		_env.adjustment_saturation = p.saturation
 		_env.adjustment_brightness = p.brightness
 		_env.adjustment_contrast = p.contrast
+		# "Shadow strength" also scales screen-space AO so it deepens the hair/brow/nose CONTACT
+		# onto the face (a screen-space crease, independent of light angle) — not just the cast
+		# shadow_opacity below. This is what makes the slider read as "hair shadow on the face".
+		_env.ssao_intensity = 0.6 + clampf(float(p.get("shadow_strength", 0.7)), 0.0, 1.0) * 0.9
 	_apply_backdrop_color()
 	var col_map := {"key": "key_col", "keyrect": "keyrect_col", "fill": "fill_col", "rim": "rim_col", "ambient": "amb_col"}
 	for k in col_map.keys():
@@ -2275,7 +2401,9 @@ func _apply_all() -> void:
 		(m as StandardMaterial3D).grow_amount = float(p.get("outfit_grow", 0.006))
 	if _character: _character.rotation.y = deg_to_rad(p.model_yaw)
 	if _overlay:
-		_overlay.modulate = Color(1, 1, 1, p.overlay)
+		# While the intro reveal is mid-fade, the tween owns the alpha — don't stomp it.
+		var oa: float = _overlay.modulate.a if (_intro_tween and _intro_tween.is_running()) else float(p.overlay)
+		_overlay.modulate = Color(1, 1, 1, oa)
 		# DEBUG overlay horizontal stretch: scale about the screen center so the UE
 		# reference image can be matched to the (slightly narrower) Godot render.
 		var sx: float = float(p.get("overlay_stretch_x", 1.0))
@@ -2363,6 +2491,11 @@ func _load_preset_file(path: String) -> void:
 			p[k] = Color(data[k][0], data[k][1], data[k][2])
 		else:
 			p[k] = data[k]
+	# Outfit inflate is a per-CHARACTER geometric anti-poke correction, NOT a lighting look —
+	# force the profile's value on every preset load so swapping lighting presets can never
+	# reintroduce bust/shoulder skin poke-through. (A live tweak is still remembered per
+	# character in the look memory until the next preset load.)
+	p["outfit_grow"] = float(_profile.get("outfit_grow", p.get("outfit_grow", 0.006)))
 	# Restore camera/orbit (only if the preset carries it — older presets won't).
 	if data.has("cam_yaw"):   _orbit_yaw = float(data["cam_yaw"])
 	if data.has("cam_pitch"): _orbit_pitch = float(data["cam_pitch"])
