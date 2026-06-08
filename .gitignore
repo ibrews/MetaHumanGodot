@@ -41,7 +41,9 @@ character.glb
 !docs/*.png
 
 # ── Dev cruft / local backups — not for publication ──────────────────────────
-*.bak
+# *.bak* (not just *.bak) so suffixed backups like character.glb.bak_premixamo — which
+# ARE MetaHuman-derived GLBs — can't slip past the asset filter into the public repo.
+*.bak*
 *.out
 /_tex_backup_mhtest/
 /textures_split/

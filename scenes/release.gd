@@ -287,6 +287,10 @@ var _body_anim_on := false       # body idle toggle (independent)
 var _follow_active := false      # face-follow runs while the body idle plays
 var _face_anim_player: AnimationPlayer
 var _body_anim_player: AnimationPlayer
+var _body_anim_name := ""          # selected body clip (Mixamo retargets: Idle/Sway/Walk/Turn/Wave/HappyIdle + BodyIdle_Procedural)
+var _body_anim_dd: OptionButton    # the body-animation dropdown
+# Preferred default + a clean display order for the dropdown (only the present ones are shown).
+const BODY_ANIM_ORDER := ["Idle", "Sway", "Walk", "Turn", "Wave", "HappyIdle", "BodyIdle_Procedural"]
 # leg idle (subtle weight-shift) + starting camera (for Reset) + outfit grow-shell
 var _pelvis_idx := -1
 var _calf_l_idx := -1
@@ -448,6 +452,14 @@ func _ready() -> void:
 			if is_instance_valid(om): om.visible = false
 	if OS.has_environment("RELEASE_RAKE") and OS.get_environment("RELEASE_RAKE") != "0":
 		_set_rake(true)
+	# QA: RELEASE_BODY_ANIM=<clip> selects + plays a specific body clip (Walk/Wave/…).
+	if OS.has_environment("RELEASE_BODY_ANIM"):
+		_select_body_anim(OS.get_environment("RELEASE_BODY_ANIM"))
+		_set_body_anim(true)
+		if OS.has_environment("RELEASE_ANIM_SEEK") and _body_anim_player:
+			_body_anim_player.seek(_envf("RELEASE_ANIM_SEEK", 0.0), true)
+			if OS.has_environment("RELEASE_CAPTURE"):
+				_body_anim_player.pause()   # hold the seeked frame for a clean still
 	# Headless QA hooks for the toggles. RELEASE_ANIM_SEEK sets the face-anim time.
 	if OS.has_environment("RELEASE_ANIM"):
 		_set_face_anim(true); _set_body_anim(true)
@@ -798,10 +810,11 @@ func _set_body_anim(on: bool) -> void:
 	_body_anim_on = on
 	if on:
 		if _body_anim_player and _body_anim_player.get_animation_list().size() > 0:
-			var bn: String = _body_anim_player.get_animation_list()[0]
+			var bn: String = _resolve_body_anim()
 			var ba: Animation = _body_anim_player.get_animation(bn)
 			if ba: ba.loop_mode = Animation.LOOP_LINEAR
 			_body_anim_player.play(bn)
+			_body_anim_name = bn
 			_follow_active = _body_skeleton != null and _face_skel != null and not _leader_pairs.is_empty()
 		else:
 			# No imported idle clip. HER explainer GLB is a STATIC bake (no skeleton, no
@@ -820,6 +833,54 @@ func _set_body_anim(on: bool) -> void:
 			if _character:
 				_character.position = _char_rest_pos
 				_character.rotation.y = deg_to_rad(p.model_yaw)
+
+# Which body clip to play: the explicit selection if present, else the first preferred
+# (Idle → … → BodyIdle_Procedural) that exists, else whatever is first in the GLB.
+func _resolve_body_anim() -> String:
+	if _body_anim_player == null: return ""
+	var list := _body_anim_player.get_animation_list()
+	if list.is_empty(): return ""
+	if _body_anim_name != "" and _body_anim_name in list: return _body_anim_name
+	for nm in BODY_ANIM_ORDER:
+		if nm in list: return nm
+	return list[0]
+
+# Switch the live body clip from the dropdown (crossfades if the body idle is playing).
+func _select_body_anim(nm: String) -> void:
+	_body_anim_name = nm
+	if _body_anim_player == null or not (nm in _body_anim_player.get_animation_list()): return
+	var a: Animation = _body_anim_player.get_animation(nm)
+	if a: a.loop_mode = Animation.LOOP_LINEAR
+	if _body_anim_on:
+		_body_anim_player.play(nm, 0.3)   # 0.3s crossfade
+		_follow_active = _body_skeleton != null and _face_skel != null and not _leader_pairs.is_empty()
+
+# Dropdown → switch the live body clip (turns the body idle on if it was off).
+func _on_body_anim_dd(idx: int) -> void:
+	if _body_anim_dd == null: return
+	var nm := _body_anim_dd.get_item_text(idx)
+	if not _body_anim_on:
+		_set_body_anim(true)
+	_select_body_anim(nm)
+	_refresh_controls()
+
+# Repopulate the body-clip dropdown from the character's AnimationPlayer (ordered Idle→…→
+# procedural, then any extras). Hidden when the character ships fewer than 2 body clips.
+func _refresh_body_anim_dd() -> void:
+	if _body_anim_dd == null: return
+	_body_anim_dd.clear()
+	var list := PackedStringArray()
+	if _body_anim_player: list = _body_anim_player.get_animation_list()
+	var ordered: Array[String] = []
+	for nm in BODY_ANIM_ORDER:
+		if list.has(nm): ordered.append(String(nm))
+	for nm in list:
+		if not ordered.has(nm): ordered.append(String(nm))
+	var sel := _resolve_body_anim()
+	for i in ordered.size():
+		_body_anim_dd.add_item(ordered[i])
+		if ordered[i] == sel: _body_anim_dd.select(i)
+	if _body_anim_dd.get_parent(): (_body_anim_dd.get_parent() as Control).visible = ordered.size() >= 2
 
 # Subtle leg weight-shift: a gentle knee bend composed on top of the body idle.
 # CRITICAL: base each rotation on the bone's REST pose, NOT the live pose. The body
@@ -1925,6 +1986,15 @@ func _setup_ui() -> void:
 	body_cb.toggled.connect(func(on): _set_body_anim(on))
 	_style_checkbox(body_cb); vb.add_child(body_cb)
 	_refreshers.append(func(): body_cb.set_pressed_no_signal(_body_anim_on))
+	# Body-clip dropdown (Mixamo retargets: Idle/Sway/Walk/Turn/Wave/HappyIdle + the procedural
+	# idle). Picking a clip switches it live (0.3s crossfade) and turns the body idle on.
+	var dd_row := HBoxContainer.new()
+	var dd_lab := Label.new(); dd_lab.text = "   clip"; dd_row.add_child(dd_lab)
+	_body_anim_dd = OptionButton.new(); _body_anim_dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_body_anim_dd.item_selected.connect(_on_body_anim_dd)
+	dd_row.add_child(_body_anim_dd); vb.add_child(dd_row)
+	_refresh_body_anim_dd()
+	_refreshers.append(_refresh_body_anim_dd)
 	# Lighting animation — same toggle group. When ON, the lighting stays ANIMATED (and
 	# persists) across character switches; when OFF, lighting follows each character's preset.
 	var lcyc_cb := CheckBox.new(); lcyc_cb.text = "Animate lighting (cycle colours)"
