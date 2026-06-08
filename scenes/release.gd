@@ -710,9 +710,11 @@ func _process(delta: float) -> void:
 		_character.rotation.y += deg_to_rad(TURNTABLE_SPEED) * delta
 		p["model_yaw"] = rad_to_deg(_character.rotation.y)
 
-	# Subtle leg weight-shift while the body idles (knee bends + tiny pelvis bob), composed
-	# on top of the body animation. Runs AFTER the AnimationPlayer applied this frame.
-	if _body_anim_on and _body_skeleton:
+	# Subtle leg weight-shift — ONLY for the procedural idle (which does NOT key the calves).
+	# The Mixamo clips animate the whole body themselves; running this on top OVERWRITES their
+	# knee bends and can compound the pelvis → the legs jitter/"freak out". So gate it to the
+	# procedural idle, where it's the intended (and only) leg driver.
+	if _body_anim_on and _body_skeleton and _body_anim_name == "BodyIdle_Procedural":
 		_update_leg_idle(delta)
 
 	# Runtime LeaderPose: drive the FACE skeleton's shared bones from the animated BODY skeleton
@@ -841,6 +843,9 @@ func _resolve_body_anim() -> String:
 	var list := _body_anim_player.get_animation_list()
 	if list.is_empty(): return ""
 	if _body_anim_name != "" and _body_anim_name in list: return _body_anim_name
+	# Default to the procedural idle — it's authored on the MH skeleton (feet planted, no float)
+	# and pairs with the bounded leg-sway. The Mixamo clips are opt-in via the dropdown.
+	if "BodyIdle_Procedural" in list: return "BodyIdle_Procedural"
 	for nm in BODY_ANIM_ORDER:
 		if nm in list: return nm
 	return list[0]
@@ -848,6 +853,10 @@ func _resolve_body_anim() -> String:
 # Switch the live body clip from the dropdown (crossfades if the body idle is playing).
 func _select_body_anim(nm: String) -> void:
 	_body_anim_name = nm
+	# Leaving the procedural idle → clear its rest-sway pose so the clip drives clean legs.
+	# Entering it → restart the sway clock so it eases in from zero.
+	if nm == "BodyIdle_Procedural": _leg_clock = 0.0
+	else: _reset_leg_bones()
 	if _body_anim_player == null or not (nm in _body_anim_player.get_animation_list()): return
 	var a: Animation = _body_anim_player.get_animation(nm)
 	if a: a.loop_mode = Animation.LOOP_LINEAR
