@@ -288,10 +288,12 @@ var _body_anim_on := false       # body idle toggle (independent)
 var _follow_active := false      # face-follow runs while the body idle plays
 var _face_anim_player: AnimationPlayer
 var _body_anim_player: AnimationPlayer
-var _body_anim_name := ""          # selected body clip (Mixamo retargets: Idle/Sway/Walk/Turn/Wave/HappyIdle + BodyIdle_Procedural)
+var _body_anim_name := "BodyIdle_Procedural"   # selected body clip; defaults to the hand-authored procedural idle (planted feet)
 var _body_anim_dd: OptionButton    # the body-animation dropdown
 # Preferred default + a clean display order for the dropdown (only the present ones are shown).
-const BODY_ANIM_ORDER := ["Idle", "Sway", "Walk", "Turn", "Wave", "HappyIdle", "BodyIdle_Procedural"]
+# BodyIdle_Procedural is FIRST = the default clip (its feet are planted, no float); the Mixamo
+# retargets follow.
+const BODY_ANIM_ORDER := ["BodyIdle_Procedural", "Idle", "Sway", "Walk", "Turn", "Wave", "HappyIdle"]
 # leg idle (subtle weight-shift) + starting camera (for Reset) + outfit grow-shell
 var _pelvis_idx := -1
 var _calf_l_idx := -1
@@ -443,6 +445,14 @@ func _ready() -> void:
 		_rebuild_bs_panel(); _refresh_controls()
 	_apply_all()
 	_play_intro_reveal()   # launch: reveal the MetaHuman reference, then fade to the live render
+	# Default animation on interactive launch = the hand-authored procedural idle (planted feet,
+	# gentle sway) so the character is alive by default. Capture/smoke + the explicit RELEASE_*_ANIM
+	# hooks manage animation themselves, so skip the auto-play there.
+	if not (OS.has_environment("RELEASE_CAPTURE") or OS.has_environment("RELEASE_SMOKE")
+			or OS.has_environment("RELEASE_BODY_ANIM") or OS.has_environment("RELEASE_ANIM")):
+		_select_body_anim("BodyIdle_Procedural")
+		_set_body_anim(true)
+		_refresh_controls()
 	# Headless QA hook: RELEASE_HAIR=0 hides all hair grooms (the "Show hair" toggle).
 	if OS.has_environment("RELEASE_HAIR"):
 		_set_hair_visible(OS.get_environment("RELEASE_HAIR") != "0")
