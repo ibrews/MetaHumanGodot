@@ -185,6 +185,10 @@ void fragment() {
 
 	//Normal Map (For Specular):
 	vec3 normal_final = texture(texture_normal, base_uv).rgb;
+	// MetaHuman/UE normal maps are DirectX-convention (green = -Y); Godot's NORMAL_MAP wants
+	// OpenGL (+Y). Flip green so this main normal matches custom_normal() below (which already
+	// inverts G). Without it the bumps light "inside-out" — the reported inverted-skin-normals bug.
+	normal_final.g = 1.0 - normal_final.g;
 	normal_final = normal_blending(normal_final, micro_normal);
 	NORMAL_MAP = normal_final;
 	NORMAL_MAP_DEPTH = normal_strength;

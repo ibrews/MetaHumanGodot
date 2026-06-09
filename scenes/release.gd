@@ -154,6 +154,7 @@ var p := {
 	"skin_tint": Color(1, 1, 1),   # multiplies the albedo — recolour skin (hue)
 	"skin_bright": 1.0,            # albedo brightness multiplier (>1 lightens past current)
 	"shadow_strength": 0.7,        # how dark cast shadows (e.g. hair on face) get; higher = stronger
+	"rake_on": false,              # opt-in hard "hair rake" light (crisp hairline shadow); preset-driven so a lighting preset (e.g. *__hairshadow) can enable it
 	"outfit_grow": 0.006,          # inflate the shirt along normals (m) so skin can't poke through
 	"body_shrink": 0.0,            # tuck the BODY skin inward (m). NOTE: the collar poke is the FACE bust-cap, not body, so this knob doesn't fix it — kept as a general tuck control
 	# hair
@@ -782,6 +783,7 @@ func _anim_active() -> bool:
 
 func _set_rake(on: bool) -> void:
 	_rake_on = on
+	p["rake_on"] = on   # persist with the look so presets can carry the hairline-shadow rake
 	if _rake:
 		_rake.visible = on
 		if on: _rake.light_energy = _envf("RELEASE_RAKE_E", _rake.light_energy)   # quick energy sweeps
@@ -1961,39 +1963,39 @@ func _setup_ui() -> void:
 	_status = Label.new(); _status.add_theme_color_override("font_color", Color(0.6, 0.9, 0.6))
 	vb.add_child(_status)
 
-	_section(vb, "CAMERA  [R] = reset  LMB=orbit  RMB=pan  wheel=zoom")
-	_orbit_slider(vb, "Orbit yaw",    func(v): _orbit_yaw = v,                           func(): return _orbit_yaw,   -180.0, 180.0, 0.5)
-	_orbit_slider(vb, "Orbit pitch",  func(v): _orbit_pitch = clampf(v, -89.0, 89.0),    func(): return _orbit_pitch,  -89.0,  89.0, 0.5)
-	_orbit_slider(vb, "Orbit dist",   func(v): _orbit_dist = v,                           func(): return _orbit_dist,    0.1,   6.0, 0.02)
-	_orbit_slider(vb, "FOV",          func(v): _orbit_fov = v; if _camera: _camera.fov=v, func(): return _orbit_fov,    10.0,  90.0, 1.0)
+	var sec_cam := _section(vb, "CAMERA  [R] = reset  LMB=orbit  RMB=pan  wheel=zoom")
+	_orbit_slider(sec_cam, "Orbit yaw",    func(v): _orbit_yaw = v,                           func(): return _orbit_yaw,   -180.0, 180.0, 0.5)
+	_orbit_slider(sec_cam, "Orbit pitch",  func(v): _orbit_pitch = clampf(v, -89.0, 89.0),    func(): return _orbit_pitch,  -89.0,  89.0, 0.5)
+	_orbit_slider(sec_cam, "Orbit dist",   func(v): _orbit_dist = v,                           func(): return _orbit_dist,    0.1,   6.0, 0.02)
+	_orbit_slider(sec_cam, "FOV",          func(v): _orbit_fov = v; if _camera: _camera.fov=v, func(): return _orbit_fov,    10.0,  90.0, 1.0)
 	# Look-at target (the point the camera orbits) as explicit numbers — formerly only
 	# reachable by RMB-pan. Together with yaw/pitch/dist/FOV this fully specifies the camera.
-	_orbit_slider(vb, "Target X (m)", func(v): _orbit_target.x = v, func(): return _orbit_target.x, -2.0, 2.0, 0.005)
-	_orbit_slider(vb, "Target Y (m)", func(v): _orbit_target.y = v, func(): return _orbit_target.y,  0.0, 2.5, 0.005)
-	_orbit_slider(vb, "Target Z (m)", func(v): _orbit_target.z = v, func(): return _orbit_target.z, -2.0, 2.0, 0.005)
-	_slider(vb, "dof_focus", "DOF focus (m)", 0.1, 8.0, 0.05)
-	_slider(vb, "dof_blur",  "DOF blur",      0.0, 0.5, 0.005)
+	_orbit_slider(sec_cam, "Target X (m)", func(v): _orbit_target.x = v, func(): return _orbit_target.x, -2.0, 2.0, 0.005)
+	_orbit_slider(sec_cam, "Target Y (m)", func(v): _orbit_target.y = v, func(): return _orbit_target.y,  0.0, 2.5, 0.005)
+	_orbit_slider(sec_cam, "Target Z (m)", func(v): _orbit_target.z = v, func(): return _orbit_target.z, -2.0, 2.0, 0.005)
+	_slider(sec_cam, "dof_focus", "DOF focus (m)", 0.1, 8.0, 0.05)
+	_slider(sec_cam, "dof_blur",  "DOF blur",      0.0, 0.5, 0.005)
 	# Animation toggles — these persist across character switches (set_pressed_no_signal +
 	# a refresher so the box reflects the carried-over state after a swap).
 	var tt_cb := CheckBox.new(); tt_cb.text = "Turntable (rotate character)"
 	tt_cb.button_pressed = _turntable
 	tt_cb.toggled.connect(func(on): _turntable = on)
-	_style_checkbox(tt_cb); vb.add_child(tt_cb)
+	_style_checkbox(tt_cb); sec_cam.add_child(tt_cb)
 	_refreshers.append(func(): tt_cb.set_pressed_no_signal(_turntable))
 	var hero_cb := CheckBox.new(); hero_cb.text = "Hero camera (ping-pong push-in)"
 	hero_cb.button_pressed = _hero_cam
 	hero_cb.toggled.connect(func(on): _set_hero_cam(on))
-	_style_checkbox(hero_cb); vb.add_child(hero_cb)
+	_style_checkbox(hero_cb); sec_cam.add_child(hero_cb)
 	_refreshers.append(func(): hero_cb.set_pressed_no_signal(_hero_cam))
 	var face_cb := CheckBox.new(); face_cb.text = "Face animation (emote)"
 	face_cb.button_pressed = _face_anim_on
 	face_cb.toggled.connect(func(on): _set_face_anim(on))
-	_style_checkbox(face_cb); vb.add_child(face_cb)
+	_style_checkbox(face_cb); sec_cam.add_child(face_cb)
 	_refreshers.append(func(): face_cb.set_pressed_no_signal(_face_anim_on))
 	var body_cb := CheckBox.new(); body_cb.text = "Body animation (idle + legs)"
 	body_cb.button_pressed = _body_anim_on
 	body_cb.toggled.connect(func(on): _set_body_anim(on))
-	_style_checkbox(body_cb); vb.add_child(body_cb)
+	_style_checkbox(body_cb); sec_cam.add_child(body_cb)
 	_refreshers.append(func(): body_cb.set_pressed_no_signal(_body_anim_on))
 	# Body-clip dropdown (Mixamo retargets: Idle/Sway/Walk/Turn/Wave/HappyIdle + the procedural
 	# idle). Picking a clip switches it live (0.3s crossfade) and turns the body idle on.
@@ -2001,7 +2003,7 @@ func _setup_ui() -> void:
 	var dd_lab := Label.new(); dd_lab.text = "   clip"; dd_row.add_child(dd_lab)
 	_body_anim_dd = OptionButton.new(); _body_anim_dd.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_body_anim_dd.item_selected.connect(_on_body_anim_dd)
-	dd_row.add_child(_body_anim_dd); vb.add_child(dd_row)
+	dd_row.add_child(_body_anim_dd); sec_cam.add_child(dd_row)
 	_refresh_body_anim_dd()
 	_refreshers.append(_refresh_body_anim_dd)
 	# Lighting animation — same toggle group. When ON, the lighting stays ANIMATED (and
@@ -2009,92 +2011,92 @@ func _setup_ui() -> void:
 	var lcyc_cb := CheckBox.new(); lcyc_cb.text = "Animate lighting (cycle colours)"
 	lcyc_cb.button_pressed = _color_cycle
 	lcyc_cb.toggled.connect(func(on): _set_color_cycle(on))
-	_style_checkbox(lcyc_cb); vb.add_child(lcyc_cb)
+	_style_checkbox(lcyc_cb); sec_cam.add_child(lcyc_cb)
 	_refreshers.append(func(): lcyc_cb.set_pressed_no_signal(_color_cycle))
 
-	_section(vb, "SCENE")
-	_slider(vb, "model_yaw", "Model yaw", 0.0, 360.0, 0.5)
-	_slider(vb, "view_pan", "View pan (subject X)", -1.0, 1.0, 0.01)
-	_slider(vb, "overlay", "UE overlay opacity", 0.0, 1.0, 0.01)
-	_slider(vb, "overlay_stretch_x", "Overlay stretch X (debug)", 0.9, 1.1, 0.001)
-	_slider(vb, "overlay_off_x", "Overlay scoot X px (debug)", -1200.0, 1200.0, 5.0)
-	_slider(vb, "zoff", "Depth nudge (m)", -0.5, 0.5, 0.005)
+	var sec_scene := _section(vb, "SCENE")
+	_slider(sec_scene, "model_yaw", "Model yaw", 0.0, 360.0, 0.5)
+	_slider(sec_scene, "view_pan", "View pan (subject X)", -1.0, 1.0, 0.01)
+	_slider(sec_scene, "overlay", "UE overlay opacity", 0.0, 1.0, 0.01)
+	_slider(sec_scene, "overlay_stretch_x", "Overlay stretch X (debug)", 0.9, 1.1, 0.001)
+	_slider(sec_scene, "overlay_off_x", "Overlay scoot X px (debug)", -1200.0, 1200.0, 5.0)
+	_slider(sec_scene, "zoff", "Depth nudge (m)", -0.5, 0.5, 0.005)
 
-	_section(vb, "LIGHTING — energy")
-	_slider(vb, "exposure", "Exposure", 0.2, 3.0, 0.01)
-	_slider(vb, "glow", "Glow", 0.0, 2.0, 0.01)
-	_slider(vb, "env_amb", "Env ambient", 0.0, 1.0, 0.01)
-	_slider(vb, "key", "Key", 0.0, 40.0, 0.1)
-	_slider(vb, "keyrect", "Key-rect", 0.0, 40.0, 0.1)
-	_slider(vb, "fill", "Fill", 0.0, 30.0, 0.1)
-	_slider(vb, "rim", "Rim", 0.0, 30.0, 0.1)
-	_slider(vb, "ambient", "Ambient pt", 0.0, 10.0, 0.05)
-	_slider(vb, "catch", "Catchlight", 0.0, 8.0, 0.05)
+	var sec_lite := _section(vb, "LIGHTING — energy")
+	_slider(sec_lite, "exposure", "Exposure", 0.2, 3.0, 0.01)
+	_slider(sec_lite, "glow", "Glow", 0.0, 2.0, 0.01)
+	_slider(sec_lite, "env_amb", "Env ambient", 0.0, 1.0, 0.01)
+	_slider(sec_lite, "key", "Key", 0.0, 40.0, 0.1)
+	_slider(sec_lite, "keyrect", "Key-rect", 0.0, 40.0, 0.1)
+	_slider(sec_lite, "fill", "Fill", 0.0, 30.0, 0.1)
+	_slider(sec_lite, "rim", "Rim", 0.0, 30.0, 0.1)
+	_slider(sec_lite, "ambient", "Ambient pt", 0.0, 10.0, 0.05)
+	_slider(sec_lite, "catch", "Catchlight", 0.0, 8.0, 0.05)
 
-	_section(vb, "COLOUR BALANCE")
-	_slider(vb, "saturation", "Saturation", 0.0, 2.0, 0.01)
-	_slider(vb, "brightness", "Brightness", 0.3, 2.0, 0.01)
-	_slider(vb, "contrast", "Contrast", 0.3, 2.0, 0.01)
+	var sec_colbal := _section(vb, "COLOUR BALANCE")
+	_slider(sec_colbal, "saturation", "Saturation", 0.0, 2.0, 0.01)
+	_slider(sec_colbal, "brightness", "Brightness", 0.3, 2.0, 0.01)
+	_slider(sec_colbal, "contrast", "Contrast", 0.3, 2.0, 0.01)
 
-	_section(vb, "LIGHTING — colour")
-	_color(vb, "key_col", "Key colour")
-	_color(vb, "keyrect_col", "Key-rect colour")
-	_color(vb, "fill_col", "Fill colour")
-	_color(vb, "rim_col", "Rim colour")
-	_color(vb, "amb_col", "Ambient colour")
-	_color(vb, "catch_col", "Catchlight colour")
-	_color(vb, "bg_col", "Background colour")
+	var sec_litecol := _section(vb, "LIGHTING — colour")
+	_color(sec_litecol, "key_col", "Key colour")
+	_color(sec_litecol, "keyrect_col", "Key-rect colour")
+	_color(sec_litecol, "fill_col", "Fill colour")
+	_color(sec_litecol, "rim_col", "Rim colour")
+	_color(sec_litecol, "amb_col", "Ambient colour")
+	_color(sec_litecol, "catch_col", "Catchlight colour")
+	_color(sec_litecol, "bg_col", "Background colour")
 	# ("Animate lighting" toggle lives with the other animation toggles in the CAMERA section.)
 
-	_section(vb, "SKIN (face + body)")
-	_color(vb, "skin_tint", "Skin colour (tint)")
-	_slider(vb, "skin_bright", "Skin lightness", 0.0, 2.5, 0.01)
-	_slider(vb, "shadow_strength", "Shadow strength (hair on face)", 0.0, 1.0, 0.01)
-	_slider(vb, "outfit_grow", "Outfit inflate (anti-poke)", 0.0, 1.0, 0.01)
-	_slider(vb, "body_shrink", "Body tuck (anti-poke) m", 0.0, 0.02, 0.0005)
-	_slider(vb, "sss", "Subsurface", 0.0, 1.0, 0.01)
-	_slider(vb, "scatter", "Scatter strength", 0.0, 3.0, 0.01)
-	_slider(vb, "skin_smooth", "Skin smoothness", 0.0, 4.0, 0.01)
-	_slider(vb, "skin_nrm", "Normal strength", 0.0, 6.0, 0.05)
-	_slider(vb, "skin_rough", "Roughness", 0.0, 1.0, 0.01)
-	_slider(vb, "skin_spec", "Specular", 0.0, 1.0, 0.01)
-	_slider(vb, "sss_depth", "SSS depth scale", 0.0, 16.0, 0.1)
-	_slider(vb, "micro", "Micro detail", 0.0, 1.0, 0.01)
-	_toggle(vb, "double_spec", "Double specular")
+	var sec_skin := _section(vb, "SKIN (face + body)")
+	_color(sec_skin, "skin_tint", "Skin colour (tint)")
+	_slider(sec_skin, "skin_bright", "Skin lightness", 0.0, 2.5, 0.01)
+	_slider(sec_skin, "shadow_strength", "Shadow strength (hair on face)", 0.0, 1.0, 0.01)
+	_slider(sec_skin, "outfit_grow", "Outfit inflate (anti-poke)", 0.0, 1.0, 0.01)
+	_slider(sec_skin, "body_shrink", "Body tuck (anti-poke) m", 0.0, 0.02, 0.0005)
+	_slider(sec_skin, "sss", "Subsurface", 0.0, 1.0, 0.01)
+	_slider(sec_skin, "scatter", "Scatter strength", 0.0, 3.0, 0.01)
+	_slider(sec_skin, "skin_smooth", "Skin smoothness", 0.0, 4.0, 0.01)
+	_slider(sec_skin, "skin_nrm", "Normal strength", 0.0, 6.0, 0.05)
+	_slider(sec_skin, "skin_rough", "Roughness", 0.0, 1.0, 0.01)
+	_slider(sec_skin, "skin_spec", "Specular", 0.0, 1.0, 0.01)
+	_slider(sec_skin, "sss_depth", "SSS depth scale", 0.0, 16.0, 0.1)
+	_slider(sec_skin, "micro", "Micro detail", 0.0, 1.0, 0.01)
+	_toggle(sec_skin, "double_spec", "Double specular")
 
-	_section(vb, "HAIR")
+	var sec_hair := _section(vb, "HAIR")
 	# Show/hide ALL hair grooms for the current character (her: scalp bob; the guy: hair +
 	# beard + mustache + eyebrow cards). Persists across character switches.
 	var hair_cb := CheckBox.new(); hair_cb.text = "Show hair"
 	hair_cb.button_pressed = _hair_visible
 	hair_cb.toggled.connect(func(on): _set_hair_visible(on))
-	_style_checkbox(hair_cb); vb.add_child(hair_cb)
+	_style_checkbox(hair_cb); sec_hair.add_child(hair_cb)
 	_refreshers.append(func(): hair_cb.set_pressed_no_signal(_hair_visible))
 	# Opt-in hard hair rake — a grazing front-high shadow-caster that makes the hair throw a
 	# crisp shadow onto the forehead/brow (most visible on her overhanging hairstyle). Off by
-	# default so it never disturbs the ported moonlight rig.
+	# default so it never disturbs the ported moonlight rig. (The *__hairshadow presets turn it on.)
 	var rake_cb := CheckBox.new(); rake_cb.text = "Hair rake light (hairline shadow)"
 	rake_cb.button_pressed = _rake_on
 	rake_cb.toggled.connect(func(on): _set_rake(on))
-	_style_checkbox(rake_cb); vb.add_child(rake_cb)
+	_style_checkbox(rake_cb); sec_hair.add_child(rake_cb)
 	_refreshers.append(func(): rake_cb.set_pressed_no_signal(_rake_on))
-	_color(vb, "hair_col", "Hair colour")
-	_slider(vb, "hair_thresh", "Alpha threshold", 0.0, 0.6, 0.005)
-	_slider(vb, "hair_root", "Root darkening", 0.0, 1.0, 0.01)
-	_slider(vb, "hair_rough", "Roughness", 0.0, 1.0, 0.01)
-	_slider(vb, "hair_spec", "Specular", 0.0, 1.0, 0.01)
-	_slider(vb, "hair_back_cut", "Backing cutoff", 0.0, 0.5, 0.005)
-	_slider(vb, "hair_back_inset", "Backing inset (m)", 0.0, 0.05, 0.001)
+	_color(sec_hair, "hair_col", "Hair colour")
+	_slider(sec_hair, "hair_thresh", "Alpha threshold", 0.0, 0.6, 0.005)
+	_slider(sec_hair, "hair_root", "Root darkening", 0.0, 1.0, 0.01)
+	_slider(sec_hair, "hair_rough", "Roughness", 0.0, 1.0, 0.01)
+	_slider(sec_hair, "hair_spec", "Specular", 0.0, 1.0, 0.01)
+	_slider(sec_hair, "hair_back_cut", "Backing cutoff", 0.0, 0.5, 0.005)
+	_slider(sec_hair, "hair_back_inset", "Backing inset (m)", 0.0, 0.05, 0.001)
 
-	_section(vb, "EYES")
-	_slider(vb, "sclera_tint", "Sclera tint", 0.0, 1.0, 0.01)
-	_slider(vb, "iris_scale", "Iris scale", 0.5, 4.0, 0.01)
-	_slider(vb, "iris_radius", "Iris radius", 0.05, 0.4, 0.005)
-	_slider(vb, "eye_rough", "Roughness", 0.0, 0.5, 0.005)
-	_slider(vb, "eye_spec", "Specular", 0.0, 1.0, 0.01)
-	_slider(vb, "eye_clearcoat", "Clearcoat (eye glow)", 0.0, 1.0, 0.01)
+	var sec_eyes := _section(vb, "EYES")
+	_slider(sec_eyes, "sclera_tint", "Sclera tint", 0.0, 1.0, 0.01)
+	_slider(sec_eyes, "iris_scale", "Iris scale", 0.5, 4.0, 0.01)
+	_slider(sec_eyes, "iris_radius", "Iris radius", 0.05, 0.4, 0.005)
+	_slider(sec_eyes, "eye_rough", "Roughness", 0.0, 0.5, 0.005)
+	_slider(sec_eyes, "eye_spec", "Specular", 0.0, 1.0, 0.01)
+	_slider(sec_eyes, "eye_clearcoat", "Clearcoat (eye glow)", 0.0, 1.0, 0.01)
 
-	_section(vb, "EYE GAZE — focal point")
+	var sec_gaze := _section(vb, "EYE GAZE — focal point")
 	# Alive eyes = candid saccadic darts + blinks around the gaze target.
 	var alive_cb := CheckBox.new()
 	alive_cb.text = "Alive eyes (darts + blinks)"
@@ -2103,7 +2105,7 @@ func _setup_ui() -> void:
 		p.eye_alive = on
 		if not on: _set_blink(0.0); _blink_t = -1.0
 	alive_cb.toggled.connect(alive_toggle)
-	_style_checkbox(alive_cb); vb.add_child(alive_cb)
+	_style_checkbox(alive_cb); sec_gaze.add_child(alive_cb)
 	_refreshers.append(func(): alive_cb.set_pressed_no_signal(bool(p.eye_alive)))
 	# Look at camera = gaze target is the camera; also live-fills the focal fields below
 	# with the camera position. Uncheck to take over from those values (e.g. look just
@@ -2112,14 +2114,14 @@ func _setup_ui() -> void:
 	lookcam_cb.text = "Look at camera (auto-fills focal below)"
 	lookcam_cb.button_pressed = bool(p.eye_look_cam)
 	lookcam_cb.toggled.connect(func(on): p.eye_look_cam = on)
-	_style_checkbox(lookcam_cb); vb.add_child(lookcam_cb)
+	_style_checkbox(lookcam_cb); sec_gaze.add_child(lookcam_cb)
 	_refreshers.append(func(): lookcam_cb.set_pressed_no_signal(bool(p.eye_look_cam)))
 	# Manual focal point — the gaze target when "Look at camera" is OFF. Single look-at
 	# point in the eye-midpoint frame: (0,0,0)=cross-eyed at the point between the eyes;
 	# +Z ahead/depth, +X subject-right, +Y up. Both eyes converge on it.
-	_focus_slider(vb, "eye_fx", "Focal X (m)", -1.0, 1.0, 0.005)
-	_focus_slider(vb, "eye_fy", "Focal Y (m)", -1.0, 1.0, 0.005)
-	_focus_slider(vb, "eye_fz", "Focal Z / depth (m)", -0.5, 5.0, 0.01)
+	_focus_slider(sec_gaze, "eye_fx", "Focal X (m)", -1.0, 1.0, 0.005)
+	_focus_slider(sec_gaze, "eye_fy", "Focal Y (m)", -1.0, 1.0, 0.005)
+	_focus_slider(sec_gaze, "eye_fz", "Focal Z / depth (m)", -0.5, 5.0, 0.01)
 	var abs_cb := CheckBox.new()
 	abs_cb.text = "Absolute (world-locked gaze)"
 	abs_cb.button_pressed = bool(p.eye_focus_abs)
@@ -2128,39 +2130,64 @@ func _setup_ui() -> void:
 		if on: _refreeze_abs_point()
 		_update_eye_focus()
 	abs_cb.toggled.connect(abs_toggle)
-	_style_checkbox(abs_cb); vb.add_child(abs_cb)
+	_style_checkbox(abs_cb); sec_gaze.add_child(abs_cb)
 	_refreshers.append(func(): abs_cb.set_pressed_no_signal(bool(p.eye_focus_abs)))
 
-	_section(vb, "PRESETS")
+	var sec_pre := _section(vb, "PRESETS")
 	var btn := Button.new(); btn.text = "Save (overwrite default)"
-	btn.pressed.connect(_save_default_preset); vb.add_child(btn)
+	btn.pressed.connect(_save_default_preset); sec_pre.add_child(btn)
 	var saverow := HBoxContainer.new()
 	_preset_name = LineEdit.new(); _preset_name.placeholder_text = "preset name"
 	_preset_name.custom_minimum_size = Vector2(180, 0); saverow.add_child(_preset_name)
 	var saveas := Button.new(); saveas.text = "Save as"
 	saveas.pressed.connect(_save_preset_as); saverow.add_child(saveas)
-	vb.add_child(saverow)
+	sec_pre.add_child(saverow)
 	var loadrow := HBoxContainer.new()
 	_preset_dd = OptionButton.new(); _preset_dd.custom_minimum_size = Vector2(200, 0)
 	loadrow.add_child(_preset_dd)
 	var loadbtn := Button.new(); loadbtn.text = "Load"
 	loadbtn.pressed.connect(_load_selected_preset); loadrow.add_child(loadbtn)
-	vb.add_child(loadrow)
+	sec_pre.add_child(loadrow)
 	_refresh_preset_list()
 
 	# capture buttons
-	_section(vb, "CAPTURE")
+	var sec_cap := _section(vb, "CAPTURE")
 	var shotbtn := Button.new(); shotbtn.text = "Screenshot"
-	shotbtn.pressed.connect(_screenshot); vb.add_child(shotbtn)
+	shotbtn.pressed.connect(_screenshot); sec_cap.add_child(shotbtn)
 	var moviebtn := Button.new(); moviebtn.text = "Capture turntable (120f mp4)"
-	moviebtn.pressed.connect(func(): _start_movie()); vb.add_child(moviebtn)
+	moviebtn.pressed.connect(func(): _start_movie()); sec_cap.add_child(moviebtn)
 
 	_build_bs_panel(layer)
 
-func _section(parent: Control, txt: String) -> void:
-	var l := Label.new(); l.text = "── " + txt + " ──"
-	l.add_theme_color_override("font_color", Color(1.0, 0.8, 0.4))
-	parent.add_child(l)
+const SECTION_OPEN_GLYPH := "▼  "
+const SECTION_CLOSED_GLYPH := "▶  "
+# Sections expanded on launch (matched by prefix). The rest start collapsed so the long control
+# list opens as a short stack of headers — click a header to fold/unfold just that area.
+const SECTION_DEFAULT_OPEN := ["CAMERA", "PRESETS"]
+
+# Collapsible section: a header BUTTON that folds/unfolds the VBoxContainer of controls beneath it.
+# Returns that container so the caller adds the section's controls to IT (collapsing hides them).
+# Headless QA env hooks drive `p`/functions directly, so a collapsed section never affects capture.
+func _section(parent: Control, txt: String) -> VBoxContainer:
+	var is_open := false
+	for k in SECTION_DEFAULT_OPEN:
+		if txt.begins_with(k): is_open = true; break
+	var body := VBoxContainer.new()
+	body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var hdr := Button.new()
+	hdr.toggle_mode = true
+	hdr.button_pressed = is_open
+	hdr.focus_mode = Control.FOCUS_NONE
+	hdr.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	hdr.add_theme_color_override("font_color", Color(1.0, 0.8, 0.4))
+	hdr.text = (SECTION_OPEN_GLYPH if is_open else SECTION_CLOSED_GLYPH) + txt
+	hdr.toggled.connect(func(on):
+		body.visible = on
+		hdr.text = (SECTION_OPEN_GLYPH if on else SECTION_CLOSED_GLYPH) + txt)
+	parent.add_child(hdr)
+	parent.add_child(body)
+	body.visible = is_open
+	return body
 
 func _slider(parent: Control, key: String, label: String, lo: float, hi: float, step: float) -> void:
 	var row := VBoxContainer.new()
@@ -2441,6 +2468,10 @@ func _apply_all() -> void:
 		_catch.light_energy = p.catch; _catch.light_color = p.catch_col
 		if _camera:
 			_catch.global_transform.origin = _camera.global_transform.origin + _camera.global_transform.basis.y * 0.12
+	# Hair rake (hairline shadow caster) is preset-driven: sync the actual light from p.rake_on so a
+	# lighting preset (e.g. *__hairshadow) enables it on load. The manual checkbox flows via _set_rake.
+	if _rake and bool(p.get("rake_on", false)) != _rake_on:
+		_set_rake(bool(p.get("rake_on", false)))
 	for m in _skin_mats:
 		var b: float = float(p.get("skin_bright", 1.0))
 		var t: Color = p.skin_tint
@@ -2596,7 +2627,9 @@ func _load_selected_preset() -> void:
 	if _preset_dd == null or _preset_dd.item_count == 0: return
 	var fn := _preset_dd.get_item_text(_preset_dd.selected)
 	_load_preset_file(_preset_path(fn))
-	_refresh_controls(); _apply_all()
+	# Apply BEFORE refreshing controls so _apply_all syncs _rake_on from p.rake_on first, letting the
+	# hair-rake checkbox reflect the loaded preset (e.g. *__hairshadow turning the rake on).
+	_apply_all(); _refresh_controls()
 
 func _refresh_preset_list() -> void:
 	if _preset_dd == null: return
