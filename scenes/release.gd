@@ -445,14 +445,9 @@ func _ready() -> void:
 		_rebuild_bs_panel(); _refresh_controls()
 	_apply_all()
 	_play_intro_reveal()   # launch: reveal the MetaHuman reference, then fade to the live render
-	# Default animation on interactive launch = the hand-authored procedural idle (planted feet,
-	# gentle sway) so the character is alive by default. Capture/smoke + the explicit RELEASE_*_ANIM
-	# hooks manage animation themselves, so skip the auto-play there.
-	if not (OS.has_environment("RELEASE_CAPTURE") or OS.has_environment("RELEASE_SMOKE")
-			or OS.has_environment("RELEASE_BODY_ANIM") or OS.has_environment("RELEASE_ANIM")):
-		_select_body_anim("BodyIdle_Procedural")
-		_set_body_anim(true)
-		_refresh_controls()
+	# NOTE: body animation is OFF by default on launch (the character stands in its rest pose). When
+	# the user turns "Body animation" on, the DEFAULT clip is the procedural idle (BodyIdle_Procedural
+	# leads BODY_ANIM_ORDER + is the initial _body_anim_name) — but we do NOT auto-start it.
 	# Headless QA hook: RELEASE_HAIR=0 hides all hair grooms (the "Show hair" toggle).
 	if OS.has_environment("RELEASE_HAIR"):
 		_set_hair_visible(OS.get_environment("RELEASE_HAIR") != "0")
@@ -471,6 +466,10 @@ func _ready() -> void:
 			_body_anim_player.seek(_envf("RELEASE_ANIM_SEEK", 0.0), true)
 			if OS.has_environment("RELEASE_CAPTURE"):
 				_body_anim_player.pause()   # hold the seeked frame for a clean still
+		if OS.has_environment("RELEASE_FOOTDBG"):
+			await get_tree().process_frame
+			await get_tree().process_frame
+			_foot_debug()
 	# Headless QA hooks for the toggles. RELEASE_ANIM_SEEK sets the face-anim time.
 	if OS.has_environment("RELEASE_ANIM"):
 		_set_face_anim(true); _set_body_anim(true)
@@ -887,6 +886,21 @@ func _on_body_anim_dd(idx: int) -> void:
 
 # Repopulate the body-clip dropdown from the character's AnimationPlayer (ordered Idle→…→
 # procedural, then any extras). Hidden when the character ships fewer than 2 body clips.
+# DEBUG (RELEASE_FOOTDBG): print where the body actually sits IN THE TOOL (node placement + the live
+# skeleton's foot/pelvis world Y), so a bare-GLB probe can be reconciled with what the tool renders.
+func _foot_debug() -> void:
+	if _body_skeleton == null:
+		print("[footdbg] no body skeleton"); return
+	var s := _body_skeleton
+	var sgt := s.global_transform
+	var line := "[footdbg] clip=%s char.pos.y=%.3f char.scale=%.3f skel.world.y=%.3f | " % [
+		_body_anim_name, _character.position.y, _character.scale.y, sgt.origin.y]
+	for nm in ["pelvis", "foot_l", "foot_r", "ball_l", "ball_r"]:
+		var bi := s.find_bone(nm)
+		if bi < 0: continue
+		line += "%s=%.3f " % [nm, (sgt * s.get_bone_global_pose(bi).origin).y]
+	print(line)
+
 func _refresh_body_anim_dd() -> void:
 	if _body_anim_dd == null: return
 	_body_anim_dd.clear()
