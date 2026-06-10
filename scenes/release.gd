@@ -163,6 +163,7 @@ var p := {
 	# hair
 	"hair_col": Color(0.20, 0.13, 0.075), "hair_thresh": 0.07,
 	"hair_root": 0.42, "hair_rough": 0.72, "hair_spec": 0.12,
+	"hair_aniso": 0.0,   # anisotropic sheen along the strands; 0 = legacy GGX
 	"hair_back_cut": 0.035, "hair_back_inset": 0.009,
 	# eyes
 	"sclera_tint": 0.35, "iris_scale": 1.62, "iris_radius": 0.185,
@@ -447,6 +448,7 @@ func _ready() -> void:
 	if OS.has_environment("RELEASE_EYE_CC"): p.eye_clearcoat = _envf("RELEASE_EYE_CC", p.eye_clearcoat)
 	if OS.has_environment("RELEASE_EYE_LIMBAL"): p.eye_limbal = _envf("RELEASE_EYE_LIMBAL", p.eye_limbal)
 	if OS.has_environment("RELEASE_EYE_LID"): p.eye_lid_shadow = _envf("RELEASE_EYE_LID", p.eye_lid_shadow)
+	if OS.has_environment("RELEASE_HAIR_ANISO"): p.hair_aniso = _envf("RELEASE_HAIR_ANISO", p.hair_aniso)
 	# Headless QA hook: RELEASE_TOGGLE=1 exercises the live character switch.
 	if OS.has_environment("RELEASE_TOGGLE"):
 		_switch_character()
@@ -2202,6 +2204,7 @@ func _setup_ui() -> void:
 	_slider(sec_hair, "hair_root", "Root darkening", 0.0, 1.0, 0.01)
 	_slider(sec_hair, "hair_rough", "Roughness", 0.0, 1.0, 0.01)
 	_slider(sec_hair, "hair_spec", "Specular", 0.0, 1.0, 0.01)
+	_slider(sec_hair, "hair_aniso", "Aniso sheen (along strands)", 0.0, 1.0, 0.01)
 	_slider(sec_hair, "hair_back_cut", "Backing cutoff", 0.0, 0.5, 0.005)
 	_slider(sec_hair, "hair_back_inset", "Backing inset (m)", 0.0, 0.05, 0.001)
 
@@ -2617,6 +2620,7 @@ func _apply_all() -> void:
 		m.set_shader_parameter("root_darkening", p.hair_root)
 		m.set_shader_parameter("roughness_val", p.hair_rough)
 		m.set_shader_parameter("specular_val", p.hair_spec)
+		m.set_shader_parameter("aniso_amount", p.get("hair_aniso", 0.0))
 	for m in _hair_back_mats:
 		m.set_shader_parameter("hair_color", (p.hair_col as Color).darkened(0.25))
 		m.set_shader_parameter("cutoff", p.hair_back_cut)

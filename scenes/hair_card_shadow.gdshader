@@ -14,6 +14,11 @@ uniform float alpha_threshold : hint_range(0.0, 1.0) = 0.13;
 uniform float root_darkening : hint_range(0.0, 1.0) = 0.42;
 uniform float roughness_val : hint_range(0.0, 1.0) = 0.72;
 uniform float specular_val : hint_range(0.0, 1.0) = 0.12;
+// Anisotropic highlight: stretches the specular along the strand direction so the
+// key light reads as a hair sheen instead of a flat plastic sheet. 0 = legacy GGX.
+// Card atlases run strands along V → flow (0,1); flip to (1,0) if an atlas differs.
+uniform float aniso_amount : hint_range(0.0, 1.0) = 0.0;
+uniform vec2 aniso_flow = vec2(0.0, 1.0);
 
 void fragment() {
 	vec4 atlas = texture(coverage_atlas, UV);
@@ -34,5 +39,9 @@ void fragment() {
 	ROUGHNESS = roughness_val;
 	SPECULAR = specular_val;
 	METALLIC = 0.0;
+	if (aniso_amount > 0.001) {
+		ANISOTROPY = aniso_amount;
+		ANISOTROPY_FLOW = aniso_flow;
+	}
 	ALPHA = a;
 }
