@@ -133,7 +133,25 @@ const ARKIT_NAMES := [
 ]
 
 const PRESET_DIR := "res://presets"          # shipped samples (tracked, code)
-const OUT_DIR := "H:/Work01/MetaHumanGodot/out/release"
+# Capture output dir: the fleet dev tree when it exists (Archie — keeps QA workflows
+# byte-identical), else a per-user VISIBLE folder: ~/Pictures/MetaHumanGodot (user data
+# dir as last resort). Resolved once. Previously a hardcoded H:/Work01/… meant every
+# interactive Screenshot / turntable silently failed on machines without an H: drive —
+# including the shipped Windows zip and the whole macOS build.
+const OUT_DIR_DEV := "H:/Work01/MetaHumanGodot/out/release"
+var _out_dir := ""
+
+func _outdir() -> String:
+	if _out_dir != "":
+		return _out_dir
+	if DirAccess.dir_exists_absolute("H:/Work01/MetaHumanGodot"):
+		_out_dir = OUT_DIR_DEV
+	else:
+		var base := OS.get_system_dir(OS.SYSTEM_DIR_PICTURES)
+		if base == "":
+			base = OS.get_user_data_dir()
+		_out_dir = base.path_join("MetaHumanGodot")
+	return _out_dir
 
 # ---- live look parameters (defaults mirror the explainer moonlight match) ----
 var p := {
@@ -501,8 +519,8 @@ func _ready() -> void:
 		_set_face_anim(true); _set_body_anim(true); _set_color_cycle(true)
 		await get_tree().create_timer(_envf("RELEASE_SMOKE", 2.0)).timeout
 		await RenderingServer.frame_post_draw
-		DirAccess.make_dir_recursive_absolute(OUT_DIR)
-		get_viewport().get_texture().get_image().save_png("%s/smoke_%s.png" % [OUT_DIR, _char_key])
+		DirAccess.make_dir_recursive_absolute(_outdir())
+		get_viewport().get_texture().get_image().save_png("%s/smoke_%s.png" % [_outdir(), _char_key])
 		print("[release] smoke done for ", _char_key, " (idle=", _static_idle_on, " cycle=", _color_cycle, ")")
 		get_tree().quit()
 	# Headless: RELEASE_CAPTURE=1 -> still (+ RELEASE_MOVIE=1 -> 120f turntable).
@@ -515,12 +533,12 @@ func _ready() -> void:
 			if _bs_collapse_btn: _bs_collapse_btn.visible = true
 		await get_tree().create_timer(0.6).timeout
 		await RenderingServer.frame_post_draw
-		DirAccess.make_dir_recursive_absolute(OUT_DIR)
+		DirAccess.make_dir_recursive_absolute(_outdir())
 		var img := get_viewport().get_texture().get_image()
 		# RELEASE_OUT=<abs path.png> names the still (QA sweeps stop overwriting each other);
 		# default stays the legacy release_<char>_still.png.
 		var outp := OS.get_environment("RELEASE_OUT") if OS.has_environment("RELEASE_OUT") \
-			else "%s/release_%s_still.png" % [OUT_DIR, _char_key]
+			else "%s/release_%s_still.png" % [_outdir(), _char_key]
 		DirAccess.make_dir_recursive_absolute(outp.get_base_dir())
 		img.save_png(outp)
 		print("[release] still saved -> ", outp)
@@ -2783,10 +2801,10 @@ func _capture_still() -> void:
 	_hide_chrome()
 	await get_tree().create_timer(0.05).timeout
 	await RenderingServer.frame_post_draw
-	DirAccess.make_dir_recursive_absolute(OUT_DIR)
+	DirAccess.make_dir_recursive_absolute(_outdir())
 	var img := get_viewport().get_texture().get_image()
 	var stamp := Time.get_datetime_string_from_system().replace(":", "-")
-	var shot_path := "%s/release_%s_%s.png" % [OUT_DIR, _char_key, stamp]
+	var shot_path := "%s/release_%s_%s.png" % [_outdir(), _char_key, stamp]
 	img.save_png(shot_path)
 	# restore chrome
 	if _panel: _panel.visible = pv
@@ -2797,10 +2815,10 @@ func _capture_still() -> void:
 	if _bs_collapse_btn: _bs_collapse_btn.visible = bv
 	p.overlay = ov
 	if _overlay: _overlay.modulate.a = ov
-	_set_status("screenshot -> " + shot_path.get_file())
+	_set_status("screenshot -> " + shot_path)
 
 func _start_movie() -> void:
-	var mdir := "%s/frames_%s" % [OUT_DIR, _char_key]
+	var mdir := "%s/frames_%s" % [_outdir(), _char_key]
 	DirAccess.make_dir_recursive_absolute(mdir)
 	_movie = true; _movie_frame = 0
 	_spin_start = _character.rotation.y if _character else 0.0
@@ -2811,7 +2829,7 @@ func _start_movie() -> void:
 
 func _on_post_draw() -> void:
 	if not _movie: return
-	var mdir := "%s/frames_%s" % [OUT_DIR, _char_key]
+	var mdir := "%s/frames_%s" % [_outdir(), _char_key]
 	var img := get_viewport().get_texture().get_image()
 	img.save_png("%s/f%04d.png" % [mdir, _movie_frame])
 	_movie_frame += 1
@@ -2824,8 +2842,8 @@ func _finish_movie() -> void:
 	_movie = false
 	if RenderingServer.frame_post_draw.is_connected(_on_post_draw):
 		RenderingServer.frame_post_draw.disconnect(_on_post_draw)
-	var mdir := "%s/frames_%s" % [OUT_DIR, _char_key]
-	var out_mp4 := "%s/release_%s_turntable.mp4" % [OUT_DIR, _char_key]
+	var mdir := "%s/frames_%s" % [_outdir(), _char_key]
+	var out_mp4 := "%s/release_%s_turntable.mp4" % [_outdir(), _char_key]
 	var py := "%s/_assemble.py" % mdir
 	var pf := FileAccess.open(py, FileAccess.WRITE)
 	pf.store_string(ASSEMBLE_PY); pf.close()

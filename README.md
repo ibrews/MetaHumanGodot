@@ -82,9 +82,18 @@ present and unchanged) into one "best of both worlds" look-dev environment:
 
 ## Download
 
-A prebuilt **Windows demo** (with a sample MetaHuman baked in) is on the
-[**Releases**](../../releases) page — download `MetaHumanGodot-win64.zip`, unzip,
-and run `MetaHumanGodot.exe`. Or build/run from source (below).
+Prebuilt demos (with a sample MetaHuman baked in) are on the
+[**Releases**](../../releases) page — or build/run from source (below):
+
+- **Windows:** download `MetaHumanGodot-win64.zip`, unzip, run `MetaHumanGodot.exe`.
+- **macOS** (universal — Apple Silicon + Intel): download
+  `MetaHumanGodot-macos-universal.zip`, unzip, run `MetaHumanGodot.app`. The app is
+  ad-hoc-signed (not notarized), so macOS quarantines the download on first launch:
+  either run `xattr -cr MetaHumanGodot.app` in Terminal, or open it once and approve
+  it under **System Settings → Privacy & Security → Open Anyway**.
+
+Screenshots and turntables save to `~/Pictures/MetaHumanGodot` (shown in the status
+bar after each capture).
 
 | The interactive tool | Live expressions |
 | --- | --- |

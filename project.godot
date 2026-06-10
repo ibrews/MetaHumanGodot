@@ -14,7 +14,7 @@ compatibility/default_parent_skeleton_in_mesh_instance_3d=true
 
 [application]
 
-config/name="MetaHumanGodotPilot"
+config/name="MetaHumanGodot"
 config/description="MetaHuman exported from UE5 5.7 → Blender → Godot 4.6 with MatMADNESS HumanShaders.
 First fleet run; documenting gotchas in the KB technique doc."
 run/main_scene="res://scenes/release.tscn"
@@ -33,6 +33,9 @@ window/size/borderless=false
 
 renderer/rendering_method="forward_plus"
 renderer/rendering_method.mobile="forward_plus"
+; ASTC variants imported alongside S3TC so the macOS (universal/arm64) export can pack
+; Apple-GPU textures. The Windows preset still packs S3TC only.
+textures/vram_compression/import_etc2_astc=true
 environment/subsurface_scattering/subsurface_scattering_quality=2
 environment/subsurface_scattering/subsurface_scattering_scale=0.08
 anti_aliasing/quality/msaa_3d=3

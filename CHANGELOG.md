@@ -25,6 +25,11 @@ feet, and eyes gain the two classic realism terms they were missing.
   strands instead of a flat plastic sheet.
 - **Drag-and-drop GLB loading** — drop a `.glb`/`.gltf` anywhere on the window
   to load it as a custom character (same path as the file dialog).
+- **macOS build** — a universal (Apple Silicon + Intel), ad-hoc-signed
+  `MetaHumanGodot.app` ships alongside the Windows zip (runs on Godot's native
+  Metal backend; verified on an M2 Pro). Not notarized: clear the quarantine
+  with `xattr -cr MetaHumanGodot.app` or approve it under System Settings →
+  Privacy & Security on first launch.
 - `RELEASE_OUT=<path.png>` names the headless still so QA sweeps stop
   overwriting `release_<char>_still.png`.
 
@@ -36,6 +41,10 @@ feet, and eyes gain the two classic realism terms they were missing.
 - **Turntable mp4 could encode black** — windowed captures come out
   work-area-short (e.g. 1080×1061) and avc1 silently produces black frames on
   odd dimensions; the assembler now crops frames to even dims.
+- **Captures silently failed on machines without an `H:` drive** — the output
+  folder was hardcoded to the dev tree, so the Screenshot/turntable buttons in
+  shipped builds wrote nowhere. Captures now land in `~/Pictures/MetaHumanGodot`
+  (any OS) when the dev tree is absent, and the status bar shows the full path.
 - Interactive screenshot status now shows the saved filename.
 
 ## [0.3.0] — 2026-06-09
