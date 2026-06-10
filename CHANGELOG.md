@@ -4,9 +4,11 @@ All notable changes to **MetaHuman → Godot Look-Dev** are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/); this project
 is a developer tool, so versions are milestones rather than a strict semver API.
 
-## [Unreleased]
+## [0.4.0] — 2026-06-09
 
-Post-0.3.0 photorealism + utility audit round.
+The "grounded" release — a fresh-eyes photorealism + utility audit of v0.3.0:
+pore-level skin detail actually renders now, a studio floor grounds the planted
+feet, and eyes gain the two classic realism terms they were missing.
 
 ### Added
 - **Studio floor** — a shadow-receiving, infinity-cyc ground plane under the

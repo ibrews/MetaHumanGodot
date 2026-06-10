@@ -35,7 +35,8 @@ present and unchanged) into one "best of both worlds" look-dev environment:
 - **Character toggle** — switch live between two built-in MetaHumans (a male and a
   female face), re-wiring skin / eyes / hair / hidden slots for each. Press **C**
   or click *Character: …*.
-- **Load custom character** — a file dialog loads **any** `.glb`/`.gltf` at runtime
+- **Load custom character** — a file dialog **or drag-and-drop** (drop a
+  `.glb`/`.gltf` anywhere on the window) loads any model at runtime
   (`GLTFDocument`), unit-normalizes mixed cm/m meshes, and best-effort wires skin
   (from the model's own baked textures) / eyes / hair by material-name heuristics.
   Degrades gracefully on unrecognized models — it still loads and renders, and the
@@ -47,9 +48,10 @@ present and unchanged) into one "best of both worlds" look-dev environment:
   shown disabled. *(The male character ships with the full set baked; see
   [ARKit blendshapes](#arkit-blendshapes).)*
 - **Full look-dev controls** — skin (SSS, scatter, smoothness, normal, roughness,
-  specular, micro-detail, SSS depth), hair (colour, alpha threshold, root
-  darkening, roughness, specular, backing shell), eyes (sclera tint, iris
-  scale/radius, roughness, specular, clearcoat), per-light energy **and** colour
+  specular, pore-level micro-detail, SSS depth), hair (colour, alpha threshold,
+  root darkening, roughness, specular, anisotropic sheen, backing shell), eyes
+  (sclera tint, iris scale/radius, roughness, specular, clearcoat, **limbal ring**,
+  **lid shadow**), per-light energy **and** colour
   (key / key-rect / fill / rim / ambient point / catchlight), exposure / glow /
   env-ambient, **AgX** tonemap, **SSIL**, colour balance (saturation / brightness /
   contrast), model yaw, and a UE-frame-0 overlay. Every slider has a type-in box
@@ -61,6 +63,10 @@ present and unchanged) into one "best of both worlds" look-dev environment:
   static/boneless meshes), naturalistic **eye gaze** (look-at-camera + saccadic
   darts + blinks — driven by the eye bones when present, or by a faked iris-shift
   shader on boneless faces), a turntable, and a ping-pong **hero camera**.
+- **Studio floor** — a shadow-receiving "infinity cyc" ground plane under the
+  feet: the figure's cast shadows pool on it, SSAO grounds the soles, and it
+  dissolves into the backdrop with no horizon band under *any* lighting preset.
+  Toggle + darkness slider in SCENE; tinted live from the background colour.
 - **Matched-to-Unreal rig** — the lights and camera are an exact port of a UE
   "Moonlight" CineCamera scene (cm→m, Z-up→Y-up, left→right-handed), so a Godot
   turntable lines up with the Unreal one. Energies are yours to tune.
@@ -83,6 +89,10 @@ and run `MetaHumanGodot.exe`. Or build/run from source (below).
 | The interactive tool | Live expressions |
 | --- | --- |
 | ![UI](docs/ui.png) | ![Smile](docs/smile.png) |
+
+| Grounded full-body motion | Pore-level skin + eye detail |
+| --- | --- |
+| ![Grounded walk on the studio floor](docs/grounded.png) | ![Micro-detail skin and limbal-ring eyes](docs/detail.png) |
 
 ## Quick start
 
@@ -112,7 +122,7 @@ MH_Test tuner, launchable via `run_lookdev.bat`) and `scenes/match_lookdev.tscn`
 | Action | Input |
 | --- | --- |
 | Next character | **C** (or *Character: …* button) |
-| Load custom character (GLB) | *Load custom character…* button |
+| Load custom character (GLB) | *Load custom character…* button, or **drag-and-drop** a `.glb`/`.gltf` onto the window |
 | Toggle ARKit blendshape panel | **B** |
 | Hide / show the look-dev panel | **H** |
 | Toggle UE-frame-0 overlay | **O** |
@@ -144,11 +154,14 @@ Headless (for regenerating matched side-by-sides):
 RELEASE_CHAR=guy RELEASE_CAPTURE=1 [RELEASE_MOVIE=1] [MOVIE_FRAMES=120] \
   <godot-binary> --path <abs> scenes/release.tscn --resolution 1080x1080
 ```
-`RELEASE_CHAR` is `her` or `guy`. `RELEASE_CAPTURE` renders `release_<char>_still.png`;
-add `RELEASE_MOVIE` for a 120-frame turntable assembled to mp4 via OpenCV (`cv2`;
-falls back from H.264 to `mp4v` if no OpenH264). QA hooks: `RELEASE_BS="jawOpen=1.0,
-mouthSmileLeft=0.8"` drives shapes; `RELEASE_CUSTOM=<abs path>` exercises the custom
-loader; `RELEASE_TOGGLE=1` switches character once before capture.
+`RELEASE_CHAR` is `her` or `guy`. `RELEASE_CAPTURE` renders `release_<char>_still.png`
+(name it explicitly with `RELEASE_OUT=<abs path.png>` so sweeps don't overwrite each
+other); add `RELEASE_MOVIE` for a 120-frame turntable assembled to mp4 via OpenCV
+(`cv2`; falls back from H.264 to `mp4v` if no OpenH264). QA hooks: `RELEASE_BS=
+"jawOpen=1.0,mouthSmileLeft=0.8"` drives shapes; `RELEASE_CUSTOM=<abs path>` exercises
+the custom loader; `RELEASE_TOGGLE=1` switches character once before capture. The
+full env-hook reference (eye/hair sweeps, body-clip posing, foot debugging, smoke
+runs) lives in the [wiki](../../wiki).
 
 ## Bring your own MetaHuman
 
