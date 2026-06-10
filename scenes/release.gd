@@ -167,6 +167,7 @@ var p := {
 	# eyes
 	"sclera_tint": 0.35, "iris_scale": 1.62, "iris_radius": 0.185,
 	"eye_rough": 0.03, "eye_spec": 1.0, "eye_clearcoat": 0.25,
+	"eye_limbal": 0.45, "eye_lid_shadow": 0.30,
 	# colour balance
 	"saturation": 1.06, "brightness": 1.0, "contrast": 1.05,
 	# scene
@@ -444,6 +445,8 @@ func _ready() -> void:
 	if OS.has_environment("RELEASE_EYE_TINT"): p.sclera_tint = _envf("RELEASE_EYE_TINT", p.sclera_tint)
 	if OS.has_environment("RELEASE_EYE_ROUGH"): p.eye_rough = _envf("RELEASE_EYE_ROUGH", p.eye_rough)
 	if OS.has_environment("RELEASE_EYE_CC"): p.eye_clearcoat = _envf("RELEASE_EYE_CC", p.eye_clearcoat)
+	if OS.has_environment("RELEASE_EYE_LIMBAL"): p.eye_limbal = _envf("RELEASE_EYE_LIMBAL", p.eye_limbal)
+	if OS.has_environment("RELEASE_EYE_LID"): p.eye_lid_shadow = _envf("RELEASE_EYE_LID", p.eye_lid_shadow)
 	# Headless QA hook: RELEASE_TOGGLE=1 exercises the live character switch.
 	if OS.has_environment("RELEASE_TOGGLE"):
 		_switch_character()
@@ -2209,6 +2212,8 @@ func _setup_ui() -> void:
 	_slider(sec_eyes, "eye_rough", "Roughness", 0.0, 0.5, 0.005)
 	_slider(sec_eyes, "eye_spec", "Specular", 0.0, 1.0, 0.01)
 	_slider(sec_eyes, "eye_clearcoat", "Clearcoat (eye glow)", 0.0, 1.0, 0.01)
+	_slider(sec_eyes, "eye_limbal", "Limbal ring (iris rim)", 0.0, 1.0, 0.01)
+	_slider(sec_eyes, "eye_lid_shadow", "Lid shadow (top occlusion)", 0.0, 1.0, 0.01)
 
 	var sec_gaze := _section(vb, "EYE GAZE — focal point")
 	# Alive eyes = candid saccadic darts + blinks around the gaze target.
@@ -2623,6 +2628,8 @@ func _apply_all() -> void:
 		m.set_shader_parameter("roughness_val", p.eye_rough)
 		m.set_shader_parameter("specular_val", p.eye_spec)
 		m.set_shader_parameter("clearcoat_val", p.eye_clearcoat)
+		m.set_shader_parameter("limbal_amount", p.get("eye_limbal", 0.45))
+		m.set_shader_parameter("lid_shadow", p.get("eye_lid_shadow", 0.30))
 	for m in _outfit_mats:
 		(m as StandardMaterial3D).grow_amount = float(p.get("outfit_grow", 0.006))
 	if _character: _character.rotation.y = deg_to_rad(p.model_yaw)

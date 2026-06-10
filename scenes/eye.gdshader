@@ -23,6 +23,16 @@ uniform float clearcoat_val : hint_range(0.0, 1.0) = 1.0;
 uniform float clearcoat_roughness_val : hint_range(0.0, 1.0) = 0.03;
 uniform float normal_strength : hint_range(0.0, 2.0) = 0.6;
 uniform float sclera_tint : hint_range(0.0, 1.0) = 1.0;  // 1 = full veins, lower = whiter
+// Limbal ring: the dark band where iris meets sclera — reads as eye "contact/definition";
+// straddles the iris edge (peaks AT iris_radius, fades both ways).
+uniform float limbal_amount : hint_range(0.0, 1.0) = 0.45;
+uniform float limbal_width : hint_range(0.0, 0.15) = 0.05;
+// Upper-lid shadow: soft occlusion where the lid overhangs the eyeball. Kills the
+// "ping-pong ball" uniform-white sclera. In eye-UV: +y = up (same convention the
+// iris_offset gaze was calibrated to); the band eases in above lid_shadow_start.
+uniform float lid_shadow : hint_range(0.0, 1.0) = 0.30;
+uniform float lid_shadow_start = 0.60;
+uniform float lid_shadow_end = 0.88;
 
 void fragment() {
 	// iris_offset shifts the iris/pupil center (fake gaze for boneless eyes).
@@ -40,6 +50,15 @@ void fragment() {
 
 	float mask = smoothstep(iris_radius, iris_radius + blend_softness, dist);
 	ALBEDO = mix(iris_rgb, sclera_rgb, mask);
+
+	// Limbal ring (dark iris rim), centred on the iris edge.
+	float ring = smoothstep(iris_radius - limbal_width, iris_radius, dist)
+		* (1.0 - smoothstep(iris_radius, iris_radius + limbal_width * 0.7, dist));
+	ALBEDO *= 1.0 - limbal_amount * ring;
+
+	// Upper-lid occlusion: soft vertical AO toward the top of the eyeball (the iris
+	// moves with gaze via iris_offset; the lid shadow stays put with the lid).
+	ALBEDO *= 1.0 - lid_shadow * smoothstep(lid_shadow_start, lid_shadow_end, UV.y);
 
 	// Surface relief: iris fiber normal inside, sclera normal outside.
 	vec3 n_iris = texture(iris_normal, iris_uv).rgb;
