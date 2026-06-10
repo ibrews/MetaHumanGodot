@@ -1559,6 +1559,15 @@ func _make_skin(bc: String, nn: String, srmf: String, scatter: String) -> Shader
 	# a black/cavity map there kills SSS and smears veins.
 	mat.set_shader_parameter("ambient_occlusion_texture", _white_tex())
 	mat.set_shader_parameter("use_ambient_occlusion", false)
+	# Pore-level tiling micro-normal (same binding as look_dev/emote_render). _apply_all
+	# drives use_micro_detail + micro_normal_strength from the "Micro detail" slider —
+	# WITHOUT this binding the sampler read flat and the slider (and the shipped presets
+	# carrying micro 0.58–0.69) silently did nothing. Guarded: a BYO-MetaHuman checkout
+	# without the texture keeps the old (no-op) behaviour.
+	var t_micro := _rtex("skin_micro_n.png")
+	if t_micro:
+		mat.set_shader_parameter("texture_micro_detail", t_micro)
+		mat.set_shader_parameter("micro_detail_scale", 22.0)
 	mat.set_shader_parameter("use_micro_detail", false)
 	mat.set_shader_parameter("micro_normal_strength", 0.0)
 	mat.set_shader_parameter("micro_ao_strength", 0.0)
@@ -1697,6 +1706,11 @@ func _make_skin_from_existing(src: Material) -> ShaderMaterial:
 	mat.set_shader_parameter("use_scatter_map", false)
 	mat.set_shader_parameter("ambient_occlusion_texture", _white_tex())
 	mat.set_shader_parameter("use_ambient_occlusion", false)
+	# Custom skin gets the same tiling micro-normal so the "Micro detail" slider works on it.
+	var t_micro := _rtex("skin_micro_n.png")
+	if t_micro:
+		mat.set_shader_parameter("texture_micro_detail", t_micro)
+		mat.set_shader_parameter("micro_detail_scale", 22.0)
 	mat.set_shader_parameter("use_micro_detail", false)
 	mat.set_shader_parameter("translucency", false)
 	mat.set_shader_parameter("uv1_scale", Vector3(1, 1, 1))
