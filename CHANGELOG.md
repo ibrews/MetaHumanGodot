@@ -4,6 +4,38 @@ All notable changes to **MetaHuman → Godot Look-Dev** are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/); this project
 is a developer tool, so versions are milestones rather than a strict semver API.
 
+## [Unreleased]
+
+Post-0.3.0 photorealism + utility audit round.
+
+### Added
+- **Studio floor** — a shadow-receiving, infinity-cyc ground plane under the
+  feet (opaque so SSAO/SSIL ground the soles; albedo→emission dissolve into the
+  backdrop so no corner band appears under any lighting preset). `Show floor`
+  toggle + `Floor darkness` slider, tinted live from the background colour;
+  full-body and walk views no longer float in a void.
+- **Eye limbal ring + upper-lid shadow** (`eye.gdshader`) — dark iris rim that
+  tracks the iris-radius slider, and a soft top-of-eyeball occlusion that kills
+  the ping-pong-ball sclera. `Limbal ring` / `Lid shadow` sliders,
+  `RELEASE_EYE_LIMBAL` / `RELEASE_EYE_LID` QA hooks.
+- **Opt-in anisotropic hair sheen** (`Aniso sheen` slider, default 0 = legacy
+  GGX; `RELEASE_HAIR_ANISO`) — stretches the key-light highlight along the
+  strands instead of a flat plastic sheet.
+- **Drag-and-drop GLB loading** — drop a `.glb`/`.gltf` anywhere on the window
+  to load it as a custom character (same path as the file dialog).
+- `RELEASE_OUT=<path.png>` names the headless still so QA sweeps stop
+  overwriting `release_<char>_still.png`.
+
+### Fixed
+- **Micro-detail skin slider was a silent no-op** — the release tool never
+  bound `skin_micro_n.png` to the skin material (look_dev/emote_render always
+  did), so the pore-level detail the shipped presets dial in (micro 0.58–0.69)
+  never rendered. Pores are back.
+- **Turntable mp4 could encode black** — windowed captures come out
+  work-area-short (e.g. 1080×1061) and avc1 silently produces black frames on
+  odd dimensions; the assembler now crops frames to even dims.
+- Interactive screenshot status now shows the saved filename.
+
 ## [0.3.0] — 2026-06-09
 
 The "body in motion" release. v0.2.0 rigged both characters with a single body
