@@ -147,6 +147,9 @@ var p := {
 	"amb_col": Color(0.0, 24.0/255, 139.0/255),
 	"catch_col": Color(1.0, 0.98, 0.95),
 	"bg_col": Color(0.050, 0.118, 0.280),   # backdrop tint (preset-driven for mood)
+	# studio floor: a shadow-receiving ground plane that fades radially into the backdrop.
+	# Sells the planted feet in full-body/turntable views; sits below the portrait framing.
+	"floor_on": true, "floor_dark": 0.45,   # darkness relative to bg_col (0 = wall colour, 1 = black)
 	# skin
 	"sss": 0.1, "skin_smooth": 0.62, "skin_nrm": 1.65, "skin_rough": 0.59,
 	"skin_spec": 0.33, "scatter": 2.15, "double_spec": false, "sss_depth": 6.0,
@@ -189,6 +192,8 @@ var _profile := {}
 var _character: Node3D
 var _env: Environment
 var _backdrop_mat: ShaderMaterial
+var _floor_mat: ShaderMaterial
+var _floor_mesh: MeshInstance3D
 var _lights := {}
 var _catch: OmniLight3D
 var _rake: SpotLight3D                        # opt-in hard "hair rake" — skims the hairline so hair throws a crisp forehead shadow (off by default; doesn't disturb the moonlight rig)
@@ -581,9 +586,48 @@ void fragment() {
 """
 	var sm := ShaderMaterial.new(); sm.shader = sh; mi.material_override = sm; add_child(mi)
 	_backdrop_mat = sm
+	_setup_floor()
 	_apply_backdrop_color()
 
-# Tint the backdrop gradient + environment bg from p.bg_col (drives mood variety).
+# Studio floor: a flat ground plane at the feet (y=0) that RECEIVES the rig's cast
+# shadows (the spots throw a real shadow pool under the figure). OPAQUE on purpose:
+# only opaque geometry joins the depth prepass, so SSAO darkens the sole↔floor
+# contact and SSIL bounces the light pools — an alpha-faded floor got neither and
+# the feet still floated. The "dissolve" is an ALBEDO blend out to the wall-bottom
+# tint, meeting the backdrop at z=-6 as a natural (slightly darker) studio corner.
+func _setup_floor() -> void:
+	var plane := PlaneMesh.new(); plane.size = Vector2(16, 16)
+	_floor_mesh = MeshInstance3D.new(); _floor_mesh.mesh = plane
+	_floor_mesh.position = Vector3(0, -0.001, 0)   # a hair under the soles — no z-fight
+	_floor_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var sh := Shader.new()
+	sh.code = """
+shader_type spatial;
+render_mode depth_draw_opaque, cull_back, diffuse_burley, specular_schlick_ggx;
+uniform vec3 floor_col : source_color = vec3(0.028, 0.065, 0.155);
+uniform vec3 horizon_col : source_color = vec3(0.055, 0.13, 0.295);
+uniform float fade_start = 1.4;   // m from origin where the dissolve to horizon_col begins
+uniform float fade_end = 5.6;     // fully wall-tinted just before the corner at 6
+varying vec3 wpos;
+void vertex() { wpos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz; }
+void fragment() {
+	float t = smoothstep(fade_start, fade_end, length(wpos.xz));
+	// Infinity-cyc dissolve: ramp the LIT albedo to black while EMISSION ramps to the
+	// (unshaded) wall colour, so at the corner the floor pixel equals the wall pixel
+	// under ANY lighting — no dark band in dim rigs, no bright band in high-key ones.
+	ALBEDO = mix(floor_col, vec3(0.0), t);
+	EMISSION = horizon_col * t;
+	ROUGHNESS = mix(0.93, 1.0, t);
+	SPECULAR = mix(0.22, 0.0, t);
+}
+"""
+	var sm := ShaderMaterial.new(); sm.shader = sh
+	_floor_mesh.material_override = sm
+	add_child(_floor_mesh)
+	_floor_mat = sm
+	_floor_mesh.visible = bool(p.get("floor_on", true))
+
+# Tint the backdrop gradient + floor + environment bg from p.bg_col (drives mood variety).
 func _apply_backdrop_color() -> void:
 	var bg: Color = p.get("bg_col", Color(0.050, 0.118, 0.280))
 	if _env: _env.background_color = bg
@@ -591,6 +635,10 @@ func _apply_backdrop_color() -> void:
 		_backdrop_mat.set_shader_parameter("top_col", bg.darkened(0.12))
 		_backdrop_mat.set_shader_parameter("bot_col", bg.lightened(0.06))
 		_backdrop_mat.set_shader_parameter("glow_col", bg.lightened(0.12))
+	if _floor_mat:
+		_floor_mat.set_shader_parameter("floor_col",
+			bg.darkened(clampf(float(p.get("floor_dark", 0.45)), 0.0, 1.0)))
+		_floor_mat.set_shader_parameter("horizon_col", bg.lightened(0.06))   # = wall bot_col
 
 # ---- lights (ported UE moonlight rig) ---------------------------------------
 func _spot(nm: String, ue_loc: Array, pitch: float, yaw: float, col: Color,
@@ -1018,13 +1066,17 @@ func _update_color_cycle(delta: float) -> void:
 	_cycle_light("rim", t * 0.08, 0.33)
 	if _lights.has("ambient"):
 		(_lights["ambient"] as Light3D).light_color = Color.from_hsv(fmod(t * 0.04 + 0.66, 1.0), 0.55, 0.5)
-	# tint the backdrop gradient + environment bg for full-scene mood
+	# tint the backdrop gradient + floor + environment bg for full-scene mood
 	var bgc := Color.from_hsv(fmod(t * 0.03, 1.0), 0.5, 0.28)
 	if _env: _env.background_color = bgc
 	if _backdrop_mat:
 		_backdrop_mat.set_shader_parameter("top_col", bgc.darkened(0.12))
 		_backdrop_mat.set_shader_parameter("bot_col", bgc.lightened(0.06))
 		_backdrop_mat.set_shader_parameter("glow_col", bgc.lightened(0.12))
+	if _floor_mat:
+		_floor_mat.set_shader_parameter("floor_col",
+			bgc.darkened(clampf(float(p.get("floor_dark", 0.45)), 0.0, 1.0)))
+		_floor_mat.set_shader_parameter("horizon_col", bgc.lightened(0.06))
 
 func _cycle_light(key: String, phase: float, offset: float) -> void:
 	if not _lights.has(key): return
@@ -2075,6 +2127,8 @@ func _setup_ui() -> void:
 	_refreshers.append(func(): lcyc_cb.set_pressed_no_signal(_color_cycle))
 
 	var sec_scene := _section(vb, "SCENE")
+	_toggle(sec_scene, "floor_on", "Show floor (ground plane)")
+	_slider(sec_scene, "floor_dark", "Floor darkness", 0.0, 1.0, 0.01)
 	_slider(sec_scene, "model_yaw", "Model yaw", 0.0, 360.0, 0.5)
 	_slider(sec_scene, "view_pan", "View pan (subject X)", -1.0, 1.0, 0.01)
 	_slider(sec_scene, "overlay", "UE overlay opacity", 0.0, 1.0, 0.01)
@@ -2524,6 +2578,8 @@ func _apply_all() -> void:
 			# what actually makes hair/nose/brow cast onto the face). 0 = no shadow (flat).
 			if L.shadow_enabled:
 				L.shadow_opacity = clampf(float(p.get("shadow_strength", 0.7)), 0.0, 1.0)
+	if _floor_mesh:
+		_floor_mesh.visible = bool(p.get("floor_on", true))
 	if _catch:
 		_catch.light_energy = p.catch; _catch.light_color = p.catch_col
 		if _camera:
