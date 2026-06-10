@@ -4,6 +4,39 @@ All notable changes to **MetaHuman → Godot Look-Dev** are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/); this project
 is a developer tool, so versions are milestones rather than a strict semver API.
 
+## [0.3.0] — 2026-06-09
+
+The "body in motion" release. v0.2.0 rigged both characters with a single body
+idle; v0.3.0 adds a library of full-body motions that actually stand on the
+floor, plus UI organization and skin-shading fixes.
+
+### Added
+- **Body-animation clip dropdown** — six Mixamo motions retargeted onto the
+  MetaHuman rig via UE 5.7's IK Retargeter (*Idle, Sway, Walk, Turn, Wave,
+  HappyIdle*) alongside the hand-authored procedural idle, which stays the
+  default clip. Switching clips crossfades live; body animation still starts
+  OFF so the character stands at rest on launch.
+- **Planted feet** across the motion library: per-clip foot grounding to the
+  scene floor, a foot-flatten that undoes the retarget's toe-down ankle bias,
+  and analytic two-bone **foot-lock IK** on the stationary clips so the stance
+  feet no longer skate while the body sways (Walk/Turn keep their natural
+  stepping).
+- **Collapsible panel sections** — the long control list now folds into labeled
+  sections (CAMERA and PRESETS open by default; click a header to expand).
+- **`hairshadow` lighting preset** (both characters) — strong key, low fill,
+  full shadow strength, hair-rake on: the hair throws a crisp, readable shadow
+  across the forehead. Presets can now carry the hair-rake state.
+- Animation QA hooks: `RELEASE_FOOTDBG` prints the live skeleton's foot/pelvis
+  heights in-tool; `scenes/diag_feet.gd` + `scenes/diag_footlock.gd` measure
+  per-clip foot height and world drift headlessly.
+
+### Fixed
+- **Skin normal-map convention** — the specular/`NORMAL_MAP` path now flips the
+  green channel to match the diffuse path (MetaHuman normal maps are
+  DirectX-convention), so skin relief lights consistently.
+- Neck-through-collar clipping during body animation (a casualty of the old
+  un-grounded walk).
+
 ## [0.2.0] — 2026-06-08
 
 The "two characters, fully rigged" release. v0.1.0 shipped a single static-posed
