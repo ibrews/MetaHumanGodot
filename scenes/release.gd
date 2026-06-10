@@ -10,8 +10,8 @@ extends Node3D
 ##     MetaHumanFace index-surface wiring, 51 ARKit shapes baked) and "her"
 ##     (character_explainer.glb, MI_*_Baked name-surface wiring). Re-wires
 ##     skin / eyes / hair / hide slots per the character profile.
-##   * LOAD CUSTOM       — file dialog -> runtime GLTFDocument load of any GLB,
-##     per-mesh unit-normalize (skeletal-vs-static cm/m fix), best-effort wiring.
+##   * LOAD CUSTOM       — file dialog OR drag-and-drop -> runtime GLTFDocument load
+##     of any GLB, per-mesh unit-normalize (skeletal-vs-static cm/m fix), best-effort wiring.
 ##   * 51 ARKit SHAPES   — toggleable scrollable panel of the canonical ARKit
 ##     blendshapes; each drives set_blend_shape_value across every mesh that
 ##     carries that named shape (face + propagated grooms). Disabled when a
@@ -383,10 +383,13 @@ d, out = sys.argv[1], sys.argv[2]
 files = sorted(glob.glob(os.path.join(d, 'f*.png')))
 if not files: sys.exit(2)
 img = cv2.imread(files[0]); h, w = img.shape[:2]
+# Crop to EVEN dims: a windowed capture is title-bar-short (e.g. 1080x1061) and
+# avc1 silently encodes BLACK frames on odd dimensions (isOpened() still true).
+h -= h % 2; w -= w % 2
 for cc in ('avc1','mp4v'):
     vw = cv2.VideoWriter(out, cv2.VideoWriter_fourcc(*cc), 30, (w, h))
     if vw.isOpened(): break
-for f in files: vw.write(cv2.imread(f))
+for f in files: vw.write(cv2.imread(f)[:h, :w])
 vw.release(); print('wrote', out, w, 'x', h, len(files), 'frames')
 """
 
@@ -504,8 +507,13 @@ func _ready() -> void:
 		await RenderingServer.frame_post_draw
 		DirAccess.make_dir_recursive_absolute(OUT_DIR)
 		var img := get_viewport().get_texture().get_image()
-		img.save_png("%s/release_%s_still.png" % [OUT_DIR, _char_key])
-		print("[release] still saved for ", _char_key)
+		# RELEASE_OUT=<abs path.png> names the still (QA sweeps stop overwriting each other);
+		# default stays the legacy release_<char>_still.png.
+		var outp := OS.get_environment("RELEASE_OUT") if OS.has_environment("RELEASE_OUT") \
+			else "%s/release_%s_still.png" % [OUT_DIR, _char_key]
+		DirAccess.make_dir_recursive_absolute(outp.get_base_dir())
+		img.save_png(outp)
+		print("[release] still saved -> ", outp)
 		if OS.has_environment("RELEASE_MOVIE"):
 			_start_movie()
 		else:
@@ -1628,6 +1636,17 @@ func _make_lash() -> Material:
 	_lash_mats.append(m)
 	return m
 
+# Drag-and-drop loader: first dropped .glb/.gltf goes through the custom-GLB path
+# (unit-normalize + best-effort wiring), exactly like the file dialog.
+func _on_files_dropped(files: PackedStringArray) -> void:
+	for f in files:
+		var ext := f.get_extension().to_lower()
+		if ext == "glb" or ext == "gltf":
+			_load_character(f)
+			_rebuild_bs_panel(); _refresh_controls(); _apply_all()
+			return
+	_set_status("drop a .glb / .gltf to load it as a custom character")
+
 # ---- custom GLB best-effort wiring ------------------------------------------
 func _wire_custom(root: Node) -> void:
 	# No known texture set; reuse the GLB's own baked textures. For skin-like
@@ -1945,6 +1964,8 @@ func _setup_ui() -> void:
 	_file_dialog.size = Vector2i(800, 560)
 	_file_dialog.file_selected.connect(func(pth): _load_character(pth); _rebuild_bs_panel(); _refresh_controls(); _apply_all())
 	layer.add_child(_file_dialog)
+	# Drag-and-drop a .glb/.gltf anywhere on the window = the same custom load.
+	get_window().files_dropped.connect(_on_files_dropped)
 
 	# main look-dev panel — full-height left column, drag-resizable + collapsible
 	_panel = PanelContainer.new()
@@ -1972,6 +1993,7 @@ func _setup_ui() -> void:
 	_char_btn = Button.new(); _char_btn.text = "Character: " + _profile["label"]
 	_char_btn.pressed.connect(_switch_character); vb.add_child(_char_btn)
 	var loadcustom := Button.new(); loadcustom.text = "Load custom character (GLB)…"
+	loadcustom.tooltip_text = "…or drag-and-drop a .glb/.gltf anywhere on the window"
 	loadcustom.pressed.connect(func(): _file_dialog.popup_centered()); vb.add_child(loadcustom)
 	var bsbtn := Button.new(); bsbtn.text = "Toggle ARKit shapes panel [B]"
 	bsbtn.pressed.connect(_toggle_bs_panel); vb.add_child(bsbtn)
@@ -2683,7 +2705,8 @@ func _capture_still() -> void:
 	DirAccess.make_dir_recursive_absolute(OUT_DIR)
 	var img := get_viewport().get_texture().get_image()
 	var stamp := Time.get_datetime_string_from_system().replace(":", "-")
-	img.save_png("%s/release_%s_%s.png" % [OUT_DIR, _char_key, stamp])
+	var shot_path := "%s/release_%s_%s.png" % [OUT_DIR, _char_key, stamp]
+	img.save_png(shot_path)
 	# restore chrome
 	if _panel: _panel.visible = pv
 	if _panel_handle: _panel_handle.visible = true
@@ -2693,7 +2716,7 @@ func _capture_still() -> void:
 	if _bs_collapse_btn: _bs_collapse_btn.visible = bv
 	p.overlay = ov
 	if _overlay: _overlay.modulate.a = ov
-	_set_status("screenshot saved")
+	_set_status("screenshot -> " + shot_path.get_file())
 
 func _start_movie() -> void:
 	var mdir := "%s/frames_%s" % [OUT_DIR, _char_key]

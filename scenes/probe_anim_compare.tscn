@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://b8mxcmp0anim1"]
+
+[ext_resource type="Script" path="res://scenes/probe_anim_compare.gd" id="1"]
+
+[node name="Root" type="Node3D"]
+script = ExtResource("1")
