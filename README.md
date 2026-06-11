@@ -87,10 +87,9 @@ Prebuilt demos (with a sample MetaHuman baked in) are on the
 
 - **Windows:** download `MetaHumanGodot-win64.zip`, unzip, run `MetaHumanGodot.exe`.
 - **macOS** (universal — Apple Silicon + Intel): download
-  `MetaHumanGodot-macos-universal.zip`, unzip, run `MetaHumanGodot.app`. The app is
-  ad-hoc-signed (not notarized), so macOS quarantines the download on first launch:
-  either run `xattr -cr MetaHumanGodot.app` in Terminal, or open it once and approve
-  it under **System Settings → Privacy & Security → Open Anyway**.
+  `MetaHumanGodot-macos-universal.zip`, unzip, run `MetaHumanGodot.app`. Signed with
+  the Agile Lens Developer ID and **notarized by Apple** — it opens normally, no
+  Gatekeeper workarounds needed.
 
 Screenshots and turntables save to `~/Pictures/MetaHumanGodot` (shown in the status
 bar after each capture).

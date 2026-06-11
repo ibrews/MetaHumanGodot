@@ -25,11 +25,10 @@ feet, and eyes gain the two classic realism terms they were missing.
   strands instead of a flat plastic sheet.
 - **Drag-and-drop GLB loading** — drop a `.glb`/`.gltf` anywhere on the window
   to load it as a custom character (same path as the file dialog).
-- **macOS build** — a universal (Apple Silicon + Intel), ad-hoc-signed
-  `MetaHumanGodot.app` ships alongside the Windows zip (runs on Godot's native
-  Metal backend; verified on an M2 Pro). Not notarized: clear the quarantine
-  with `xattr -cr MetaHumanGodot.app` or approve it under System Settings →
-  Privacy & Security on first launch.
+- **macOS build** — a universal (Apple Silicon + Intel) `MetaHumanGodot.app`
+  ships alongside the Windows zip, **Developer ID-signed and notarized by Apple**
+  (ticket stapled — opens normally with no Gatekeeper workarounds). Runs on
+  Godot's native Metal backend; verified on an M2 Pro.
 - `RELEASE_OUT=<path.png>` names the headless still so QA sweeps stop
   overwriting `release_<char>_still.png`.
 
