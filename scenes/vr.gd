@@ -131,18 +131,22 @@ func _setup_viewer() -> void:
 			ok = xr.initialize()
 	_menu_on = OS.has_environment("VR_MENU")
 	if ok:
+		# --- VR detected: full headset experience ---
 		_enable_xr(xr)
 		if _menu_on:
 			_build_menu()          # keep the real UI, shown on a worldspace panel
 		else:
 			_hide_release_ui()     # no menu: hide the flat UI for a clean look
+		# Demo states + floor credits are the in-headset experience; they replace the 2D
+		# menu that can't composite into the HMD. Desktop mode keeps its own UI instead.
+		_start_demo()
+		_build_floor_credits()
 	else:
+		# --- No VR: leave the shipped desktop tool exactly as-is (sliders, orbit cam,
+		# its own 2D credits screen). vr.gd's flight/demo stay dormant. ---
 		_flat = true
-		print("[vr] OpenXR not available (no headset / runtime) -> FLAT fallback.")
+		print("[vr] OpenXR not available -> desktop tool (full sliders, no VR overrides).")
 
-	# Demo states ON by default (the in-headset substitute for the hidden 2D menu).
-	_start_demo()
-	_build_floor_credits()
 	call_deferred("_prewarm_characters")
 
 # Required Unreal attribution (EULA §7a) rendered as 3D text laid on the studio floor —
