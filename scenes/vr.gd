@@ -90,6 +90,8 @@ const QUALITY := [
 	{"name": "Epic",   "ss": 2.0,  "msaa": Viewport.MSAA_8X,       "fov": 0},
 ]
 var _quality_idx := 3          # default Epic (auto-adaptive drops it if it can't hold)
+const ADAPT_FLOOR := 2         # auto-adaptive never drops below High (1.5x SSAA) — keeps
+                               # grooms clean; Low/Medium are manual-only (keys 1/2)
 var _adaptive := true
 var _xr_iface: XRInterface
 var _fps_t := 0.0
@@ -140,7 +142,33 @@ func _setup_viewer() -> void:
 
 	# Demo states ON by default (the in-headset substitute for the hidden 2D menu).
 	_start_demo()
+	_build_floor_credits()
 	call_deferred("_prewarm_characters")
+
+# Required Unreal attribution (EULA §7a) rendered as 3D text laid on the studio floor —
+# the in-headset equivalent of the desktop build's 2D credits screen (flat Control UI does
+# not composite into the HMD). Visible in-build, satisfies the credit requirement.
+func _build_floor_credits() -> void:
+	var lbl := Label3D.new()
+	lbl.name = "FloorCredits"
+	lbl.text = "MetaHumanGodot uses Unreal® Engine. Unreal® is a trademark or registered\n" \
+		+ "trademark of Epic Games, Inc. in the United States of America and elsewhere.\n" \
+		+ "Unreal® Engine, Copyright 1998 – 2026, Epic Games, Inc. All rights reserved.\n" \
+		+ "MetaHuman is a trademark of Epic Games. This product is not affiliated with,\n" \
+		+ "sponsored by, or endorsed by Epic Games."
+	lbl.font_size = 64
+	lbl.pixel_size = 0.0011
+	lbl.billboard = BaseMaterial3D.BILLBOARD_DISABLED
+	lbl.modulate = Color(0.62, 0.68, 0.82)
+	lbl.outline_modulate = Color(0, 0, 0, 0.6)
+	lbl.outline_size = 10
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lbl.double_sided = true
+	lbl.no_depth_test = false
+	lbl.rotation_degrees = Vector3(-90, 0, 0)   # lay flat on the floor
+	lbl.position = Vector3(0, 0.02, 0.75)        # on the floor, in front of the character's feet
+	add_child(lbl)
+	print("[vr] floor credits (Unreal attribution) placed")
 
 # Keep BOTH characters' GLB scene + textures resident in the ResourceLoader cache so the
 # first Guy<->Gal toggle doesn't stall on a cold 46-76 MB disk read. (release.gd still
@@ -268,7 +296,7 @@ func _update_adaptive(dt: float) -> void:
 	var fps := Engine.get_frames_per_second()
 	# Sustained below the 72 Hz floor → drop a tier. Sustained comfortably above with a
 	# tier in hand → climb back (long window so it doesn't oscillate).
-	if fps < 67.0 and _quality_idx > 0:
+	if fps < 67.0 and _quality_idx > ADAPT_FLOOR:
 		_fps_high = 0
 		_fps_low += 1
 		if _fps_low >= 2:
