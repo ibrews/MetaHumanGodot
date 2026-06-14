@@ -18,18 +18,6 @@ HumanShader (MIT) for real subsurface scattering.
 
 ![Hero portrait](docs/hero.png)
 
-## 🥽 VR build (preview)
-
-Walk around the MetaHuman in room-scale **stereo VR** — the same custom skin/eye/hair
-shaders and rig, now in a headset. **One unified build:** it goes VR when an OpenXR
-headset is detected, and falls back to the full desktop slider tool (below) when it
-isn't. Runs on Godot 4.7-beta3 (stereo Forward+), with fly locomotion, Mixamo body
-clips, animated lighting, and Low→Epic quality tiers with auto-adaptive framerate.
-
-![VR build — desktop fallback with live sliders](docs/vr_build.png)
-
-**[⬇ Download the VR preview](https://github.com/ibrews/MetaHumanGodot/releases/tag/vr-preview-0.1.0)** · full controls in [VR_CONTROLS.md](VR_CONTROLS.md)
-
 > **Bring your own MetaHuman.** This repo ships the *tooling* — the Godot project,
 > the look-dev UI, and the skin/eye/hair shaders. It does **not** include any
 > MetaHuman character assets. You supply your own export (see

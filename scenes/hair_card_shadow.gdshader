@@ -1,47 +1,11 @@
+// Quest-standalone STUB. The custom light() skin/eye/hair shaders do NOT compile on the
+// Mobile renderer (light_compute) — their failed pipelines intermittently flood draw_list
+// errors and corrupt frames. The real look is applied via the StandardMaterial3D swap in
+// vr.gd; this trivial shader just always compiles so nothing ever renders a null pipeline.
+// If the swap ever misses a surface it shows a neutral textured fallback, not garbage.
 shader_type spatial;
-// Hair-card shader, SHADOW-CASTING variant (explainer match scenes).
-// Same strand-mask logic as hair_card.gdshader, but uses depth_prepass_alpha
-// instead of alpha_to_coverage so the alpha-tested cards WRITE DEPTH and thus
-// cast (and self-shadow) under shadow-enabled lights. cull_disabled keeps both
-// faces of the flat cards visible.
-render_mode cull_disabled, depth_prepass_alpha, diffuse_burley, specular_schlick_ggx;
-
-uniform vec4 hair_color : source_color = vec4(0.20, 0.13, 0.075, 1.0);
-uniform sampler2D coverage_atlas : filter_linear_mipmap, repeat_enable;
-uniform bool invert_mask = false;
-uniform bool use_red_mask = false;
-uniform float alpha_threshold : hint_range(0.0, 1.0) = 0.13;
-uniform float root_darkening : hint_range(0.0, 1.0) = 0.42;
-uniform float roughness_val : hint_range(0.0, 1.0) = 0.72;
-uniform float specular_val : hint_range(0.0, 1.0) = 0.12;
-// Anisotropic highlight: stretches the specular along the strand direction so the
-// key light reads as a hair sheen instead of a flat plastic sheet. 0 = legacy GGX.
-// Card atlases run strands along V → flow (0,1); flip to (1,0) if an atlas differs.
-uniform float aniso_amount : hint_range(0.0, 1.0) = 0.0;
-uniform vec2 aniso_flow = vec2(0.0, 1.0);
-
+uniform sampler2D texture_albedo : source_color, hint_default_white;
 void fragment() {
-	vec4 atlas = texture(coverage_atlas, UV);
-	float strand_val;
-	if (use_red_mask) {
-		strand_val = atlas.r;
-	} else if (invert_mask) {
-		strand_val = dot(atlas.rgb, vec3(0.299, 0.587, 0.114));
-	} else {
-		strand_val = atlas.a;
-	}
-	float a = smoothstep(alpha_threshold - 0.05, alpha_threshold + 0.05, strand_val);
-	if (a <= 0.003) {
-		discard;
-	}
-	float darken = mix(1.0 - root_darkening, 1.0, strand_val);
-	ALBEDO = hair_color.rgb * darken;
-	ROUGHNESS = roughness_val;
-	SPECULAR = specular_val;
-	METALLIC = 0.0;
-	if (aniso_amount > 0.001) {
-		ANISOTROPY = aniso_amount;
-		ANISOTROPY_FLOW = aniso_flow;
-	}
-	ALPHA = a;
+	ALBEDO = texture(texture_albedo, UV).rgb;
+	ROUGHNESS = 0.75;
 }

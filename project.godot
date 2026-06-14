@@ -14,11 +14,11 @@ compatibility/default_parent_skeleton_in_mesh_instance_3d=true
 
 [application]
 
-config/name="MetaHumanGodot"
+config/name="Digital Human Test"
 config/description="MetaHuman exported from UE5 5.7 → Blender → Godot 4.6 with MatMADNESS HumanShaders.
 First fleet run; documenting gotchas in the KB technique doc."
 run/main_scene="res://scenes/vr.tscn"
-config/features=PackedStringArray("4.6", "Forward Plus")
+config/features=PackedStringArray("4.6", "Mobile")
 config/icon="res://icon.png"
 
 [display]
@@ -31,28 +31,46 @@ window/size/borderless=false
 
 [rendering]
 
-renderer/rendering_method="forward_plus"
-renderer/rendering_method.mobile="forward_plus"
+; Quest standalone: Forward+ (clustered) fails pipeline creation on the Adreno 740 Vulkan
+; driver under 4.7-beta3 (scene_shader_forward_clustered.cpp:503 → "Failed to link shaders").
+; The Mobile renderer is the supported standalone path. NOTE: the renderer is selected
+; before feature tags apply, so the `.mobile` override alone was ignored — the BASE method
+; must be forward_mobile. This project is Quest-only so that's fine.
+renderer/rendering_method="mobile"
+renderer/rendering_method.mobile="mobile"
 ; ASTC variants imported alongside S3TC so the macOS (universal/arm64) export can pack
 ; Apple-GPU textures. The Windows preset still packs S3TC only.
 textures/vram_compression/import_etc2_astc=true
 environment/subsurface_scattering/subsurface_scattering_quality=2
 environment/subsurface_scattering/subsurface_scattering_scale=0.08
-anti_aliasing/quality/msaa_3d=3
+; Quest standalone: MSAA + shadows trimmed from the PCVR build. The harness overrides
+; MSAA/SSAA per quality tier at runtime once XR initializes; these are the conservative
+; pre-XR defaults so the first frames aren't 8x MSAA on the Adreno.
+anti_aliasing/quality/msaa_3d=1
 anti_aliasing/quality/screen_space_aa=0
 anti_aliasing/quality/use_taa=false
-; SSAA: render 3D at 2x the 2160 output (4320 internal) then downsample. The thin
-; hair-card strands get many samples → far less shimmer, and MSAA 8x still resolves
-; the alpha_to_coverage edges at the higher internal res. scale=1.0 disables (MSAA only).
-scaling_3d/mode=0
+scaling_3d/mode=1
 scaling_3d/scale=1.0
 environment/defaults/default_clear_color=Color(0.015, 0.017, 0.022, 1)
-lights_and_shadows/directional_shadow/size=4096
-lights_and_shadows/directional_shadow/soft_shadow_filter_quality=4
-lights_and_shadows/positional_shadow/soft_shadow_filter_quality=4
+; Shadow map shrunk 4096->2048 and soft-shadow filter 4->2 for the tiled mobile GPU.
+lights_and_shadows/directional_shadow/size=2048
+lights_and_shadows/directional_shadow/soft_shadow_filter_quality=2
+lights_and_shadows/positional_shadow/soft_shadow_filter_quality=1
 
 [xr]
 
 openxr/enabled=true
 openxr/default_action_map="res://openxr_action_map.tres"
 shaders/enabled=true
+openxr/reference_space=2
+; Hand tracking: declare support so the app launches/runs with hands (no "pick up your
+; controllers" gate) — the goal is controller-free launch, not hand interaction per se.
+openxr/extensions/hand_tracking=true
+; Application SpaceWarp (Meta) — render at half rate, runtime reprojects to full Hz.
+; CONFIRMED WORKING (36 render -> 72 displayed) BUT on the Mobile/Vulkan renderer it produces a
+; view-locked black-blob reprojection artifact centered in the left eye. We now REQUEST the
+; extension at session init (true) so it can be toggled LIVE with the right trigger — vr.gd
+; force-disables it at boot via OpenXRFbSpaceWarpExtension.set_enabled(false), so the default
+; experience is the clean native render and the user opts into the 36→72 reprojection (and its
+; left-eye seam) on demand to judge the trade-off.
+openxr/extensions/meta/application_space_warp=true

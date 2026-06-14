@@ -57,3 +57,7 @@ character.glb
 # textures under addons/. Our scenes use the local scenes/*.gdshader copies, so
 # this doesn't break them — but if we ever ship the addon standalone, carve those
 # back in. A full "what to actually publish" repo curation is a follow-up.
+
+# Android gradle build template — regenerable via Godot "Install Android Build Template".
+/android/
+*-bak
