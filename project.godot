@@ -17,7 +17,12 @@ compatibility/default_parent_skeleton_in_mesh_instance_3d=true
 config/name="Digital Human Test"
 config/description="MetaHuman exported from UE5 5.7 → Blender → Godot 4.6 with MatMADNESS HumanShaders.
 First fleet run; documenting gotchas in the KB technique doc."
-run/main_scene="res://scenes/vr.tscn"
+; SPIKE (visionOS port, alex-mbp 2026-06-14): main scene + main loop switched to the
+; godotrealitykit path. Quest/canonical main scene is "res://scenes/vr.tscn" (restore to ship
+; Quest). main_loop_type=RealitySceneTree hands the main loop to godotrealitykit (RealityKit
+; renders). These deltas are LOCAL ONLY — not pushed to ibrews/MetaHumanGodot.
+run/main_scene="res://scenes/visionos.tscn"
+run/main_loop_type="RealitySceneTree"
 config/features=PackedStringArray("4.6", "Mobile")
 config/icon="res://icon.png"
 
@@ -59,7 +64,12 @@ lights_and_shadows/positional_shadow/soft_shadow_filter_quality=1
 
 [xr]
 
-openxr/enabled=true
+; SPIKE: openxr DISABLED for the visionOS/godotrealitykit path. With it true, Godot auto-inits
+; the OpenXR-OSX runtime installed on this Mac (~/godot-visionos-pilot/OpenXR-OSX), which starts a
+; headset-streaming server and hijacks the output ("No viewport was marked with use_xr, there is no
+; rendered output!") — godotrealitykit (RealityKit) is the renderer here, not OpenXR. Quest path
+; needs this true; visionOS path needs it false. (Another reason to split a `visionos` branch.)
+openxr/enabled=false
 openxr/default_action_map="res://openxr_action_map.tres"
 shaders/enabled=true
 openxr/reference_space=2
@@ -74,3 +84,16 @@ openxr/extensions/hand_tracking=true
 ; experience is the clean native render and the user opts into the 36→72 reprojection (and its
 ; left-eye seam) on demand to judge the trade-off.
 openxr/extensions/meta/application_space_warp=true
+
+; --- visionOS / godotrealitykit (SPIKE, local only) ---------------------------
+; Enables Apple's GodotRealityKit plugin (copied into addons/, which is .gitignored).
+; debug_rendering_on_macos lets RealityKit render this scene in a macOS window — no
+; device/sim needed (the visionOS Simulator cannot host godotrealitykit; it ships a
+; device-only template slice). presentation_style defaults to Volumetric Window.
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/GodotRealityKit/plugin.cfg")
+
+[reality_kit]
+
+debug_rendering_on_macos=true

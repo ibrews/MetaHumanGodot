@@ -1,0 +1,26 @@
+[gd_scene load_steps=3 format=3]
+
+; visionOS / godotrealitykit entry scene (scoping spike, 2026-06-14).
+; Vanilla on purpose: the character is instanced at runtime by visionos.gd, and the
+; RealityVolumeCamera3D + RealityKitDirectionalLightShadow3D are created from script only
+; when the godotrealitykit extension is loaded — so this scene imports in plain Godot too.
+
+[ext_resource type="Script" path="res://scenes/visionos.gd" id="1"]
+
+[sub_resource type="Environment" id="Environment_1"]
+background_mode = 0
+background_color = Color(0, 0, 0, 0)
+ambient_light_source = 2
+ambient_light_color = Color(0.55, 0.6, 0.72, 1)
+ambient_light_energy = 0.35
+
+[node name="VisionOS" type="Node3D"]
+script = ExtResource("1")
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_1")
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.86, -0.25, 0.44, 0, 0.87, 0.49, -0.51, -0.42, 0.75, 0, 3, 0)
+light_energy = 0.9
+shadow_enabled = true
