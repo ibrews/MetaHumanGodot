@@ -58,7 +58,6 @@ var _cooldown := 0.0
 var _s_px := -0.42                 # control-panel X (cfg panel_x): to the left, out of forward gaze
 var _s_py := 0.0                   # control-panel Y OFFSET from the viewer's eye height (cfg panel_y)
 var _s_pz := -0.60                 # control-panel Z (cfg panel_z): in front; its MIDDLE sits at eye level
-var _last_anchor_y := -999.0       # last eye height the figure was anchored to (re-match on recenter)
 
 func _ready() -> void:
 	_load_settings()                       # read cfg → _s_* before instancing so the right char boots
@@ -84,6 +83,8 @@ func _init_visionos_xr() -> void:
 		if origin:
 			origin.current = true
 		_cam = get_node_or_null("XROrigin3D/XRCamera3D") as XRCamera3D
+		if not XRServer.pose_recentered.is_connected(_on_recenter):
+			XRServer.pose_recentered.connect(_on_recenter)
 		_xr_ok = true
 		print("[visionos-xr] visionOS XR interface initialized — use_xr + VRS_XR; MSAA off; FXAA on")
 	else:
@@ -366,7 +367,14 @@ func _match_eye_height() -> void:
 	var eye := _character_eye_y()
 	# eye_y is linear in _rel.position.y, so this moves the eyes exactly onto the target.
 	_rel.position.y += (_cam.global_position.y + _s_height) - eye
-	_last_anchor_y = _cam.global_position.y   # baseline for the recenter re-match check
+
+# Crown-recenter (the user holds the Digital Crown → XRServer.pose_recentered): re-anchor the figure
+# + panel to the new eye height. This and boot are the ONLY times we re-anchor — never on normal head
+# motion (which was causing the constant drift).
+func _on_recenter() -> void:
+	_position_character()
+	if _panel and _cam:
+		_panel.position = Vector3(_s_px, _cam.global_position.y + _s_py, _s_pz)
 
 # World Y of the character's eyes, estimated from the head grooms (hair/brows/beard — real AABBs).
 # The skinned face/body report a COLLAPSED get_aabb() (GPU skinning) so they're skipped; the studio
@@ -591,15 +599,12 @@ func _poll_settings() -> void:
 		_apply_scale()
 		_position_character()
 		_dump_meshes()
-	# Enforce every poll: release.gd re-creates its rig's shadows, so keep ALL shadows off (or our one
-	# directional on). Keep the panel at the viewer's eye height so it survives a recenter.
+	# Enforce every poll: release.gd re-creates its rig's shadows + re-asserts groom visibility, so
+	# keep shadows off (or our one directional) and the hair backing hidden. Eye-height anchoring is
+	# NOT done here — only on boot + crown-recenter (see _on_recenter) — so the figure and panel don't
+	# drift with normal head motion.
 	_apply_shadow()
-	_tame_hair_backing()   # enforce (release.gd re-asserts groom visibility on some events)
-	if _panel and _cam:
-		_panel.position = Vector3(_s_px, _cam.global_position.y + _s_py, _s_pz)
-	# Re-match the figure's eye height if the head shifted a lot (a recenter), not on micro-movement.
-	if _cam and absf(_cam.global_position.y - _last_anchor_y) > 0.15:
-		_position_character()
+	_tame_hair_backing()
 
 # Swap guy↔gal by re-instancing the release tool with the new RELEASE_CHAR (bulletproof — reuses the
 # whole boot path: convert/position/scale/hide). Costs a GLB reload (~1-2 s) but never half-applies.
