@@ -30,16 +30,8 @@ var _s_scale := 1.0                # uniform scale of the figure
 var _s_shadow := "off"             # "off" | "high" — default OFF; toggle to crisp hi-res self-shadow
 var _s_front := 0.9                # metres in front of the user
 var _s_height := 0.0               # manual eye-height nudge (m); 0 = eyes level with the viewer
-var _s_look := 1                   # look preset index (LOOK_PRESETS); cfg key "look". 1 = more contrast
-
-# Look presets for the in-world LOOK button (and cfg "look"=N) — vary ambient fill + post contrast +
-# exposure; one AGX entry to try the filmic tonemapper. Applied to the WorldEnvironment live.
-const LOOK_PRESETS := [
-	{"n": "soft",     "amb": 0.20, "con": 1.00, "exp": 0.90, "agx": false},
-	{"n": "contrast", "amb": 0.12, "con": 1.30, "exp": 0.95, "agx": false},
-	{"n": "punchy",   "amb": 0.06, "con": 1.55, "exp": 1.00, "agx": false},
-	{"n": "agx",      "amb": 0.15, "con": 1.10, "exp": 1.05, "agx": true},
-]
+# (The LOOK-preset experiment was removed: post-contrast/AgX rendered fine in the sim but produced
+# color artifacts on-device. The plain look-dev WorldEnvironment in visionos.tscn is the keeper.)
 
 # --- state --------------------------------------------------------------------
 var _rel: Node3D
@@ -63,9 +55,10 @@ var _panel: Node3D
 var _cam: XRCamera3D
 var _buttons: Array = []
 var _cooldown := 0.0
-var _s_px := -0.42                 # control-panel position (world; cfg keys panel_x/y/z) — lower-left,
-var _s_py := 1.05                  # out of the forward gaze so it won't auto-trigger when you look
-var _s_pz := -0.60                 # at the figure; glance down-left to use it
+var _s_px := -0.42                 # control-panel X (cfg panel_x): to the left, out of forward gaze
+var _s_py := 0.0                   # control-panel Y OFFSET from the viewer's eye height (cfg panel_y)
+var _s_pz := -0.60                 # control-panel Z (cfg panel_z): in front; its MIDDLE sits at eye level
+var _last_anchor_y := -999.0       # last eye height the figure was anchored to (re-match on recenter)
 
 func _ready() -> void:
 	_load_settings()                       # read cfg → _s_* before instancing so the right char boots
@@ -108,10 +101,9 @@ func _boot() -> void:
 	_load_character()
 	await _setup_loaded_character()
 	_apply_shadow()
-	_apply_look()
 	_build_panel()
 	_dump_meshes()
-	print("[visionos-xr] ready — char=%s scale=%.2f shadow=%s look=%d front=%.2f" % [_s_char, _s_scale, _s_shadow, _s_look, _s_front])
+	print("[visionos-xr] ready — char=%s scale=%.2f shadow=%s front=%.2f" % [_s_char, _s_scale, _s_shadow, _s_front])
 
 func _load_character() -> void:
 	var ps := load("res://scenes/release.tscn") as PackedScene
@@ -226,8 +218,11 @@ func _to_standard(sm: ShaderMaterial) -> StandardMaterial3D:
 		st.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
 		st.alpha_scissor_threshold = 0.18
 		st.cull_mode = BaseMaterial3D.CULL_DISABLED
-		st.roughness = 0.9
-		st.metallic_specular = 0.1
+		# Matte hair: specular highlights on the thin hair cards alias into a flickering light/dark
+		# shimmer as the head moves (no MSAA to damp it). Disable specular entirely + full roughness.
+		st.roughness = 1.0
+		st.metallic_specular = 0.0
+		st.specular_mode = BaseMaterial3D.SPECULAR_DISABLED
 		st.emission_enabled = true
 		st.emission = hc * 0.06
 		var cov = sm.get_shader_parameter("coverage_atlas")
@@ -358,6 +353,7 @@ func _match_eye_height() -> void:
 	var eye := _character_eye_y()
 	# eye_y is linear in _rel.position.y, so this moves the eyes exactly onto the target.
 	_rel.position.y += (_cam.global_position.y + _s_height) - eye
+	_last_anchor_y = _cam.global_position.y   # baseline for the recenter re-match check
 
 # World Y of the character's eyes, estimated from the head grooms (hair/brows/beard — real AABBs).
 # The skinned face/body report a COLLAPSED get_aabb() (GPU skinning) so they're skipped; the studio
@@ -405,25 +401,6 @@ func _apply_shadow() -> void:
 		dl.directional_shadow_mode = DirectionalLight3D.SHADOW_ORTHOGONAL
 		dl.directional_shadow_max_distance = 2.5   # tight on the figure → high texel density (crisp)
 
-# Apply look preset _s_look to the WorldEnvironment (ambient fill + post contrast + exposure + tonemap).
-func _apply_look() -> void:
-	var we := get_node_or_null("WorldEnvironment") as WorldEnvironment
-	if we == null or we.environment == null:
-		return
-	var e := we.environment
-	var p = LOOK_PRESETS[_s_look % LOOK_PRESETS.size()]
-	e.ambient_light_energy = p["amb"]
-	e.adjustment_enabled = true
-	e.adjustment_contrast = p["con"]
-	e.tonemap_exposure = p["exp"]
-	e.tonemap_mode = Environment.TONE_MAPPER_AGX if p["agx"] else Environment.TONE_MAPPER_LINEAR
-	print("[visionos-xr] look %d=%s amb=%.2f con=%.2f exp=%.2f agx=%s" % [_s_look % LOOK_PRESETS.size(), p["n"], p["amb"], p["con"], p["exp"], p["agx"]])
-
-func _cycle_look() -> void:
-	_s_look = (_s_look + 1) % LOOK_PRESETS.size()
-	_save_settings()
-	_apply_look()
-
 # --- UI actions (also persist to the cfg so panel + external writers share one source) --------
 func ui_toggle_char() -> void:
 	_s_char = "her" if _s_char == "guy" else "guy"
@@ -453,7 +430,6 @@ func _activate(action: String) -> void:
 		"up": ui_bump_scale(0.15)
 		"down": ui_bump_scale(-0.15)
 		"shadow": ui_toggle_shadow()
-		"look": _cycle_look()
 
 # Floating gaze-dwell control panel: look at a button for DWELL_SEC and it fires (a filling
 # cyan tint shows progress). Head-only — works on device with no hand tracking, and renders in the
@@ -466,8 +442,9 @@ func _build_panel() -> void:
 	_panel = Node3D.new()
 	_panel.name = "ControlPanel"
 	add_child(_panel)
-	_panel.position = Vector3(_s_px, _s_py, _s_pz)
-	var defs := [["GUY / GAL", "char"], ["BIGGER", "up"], ["SMALLER", "down"], ["SHADOW", "shadow"], ["LOOK", "look"]]
+	# Panel MIDDLE at the viewer's eye height (cam Y) + the cfg Y offset — so it survives a recenter.
+	_panel.position = Vector3(_s_px, (_cam.global_position.y if _cam else 1.5) + _s_py, _s_pz)
+	var defs := [["GUY / GAL", "char"], ["BIGGER", "up"], ["SMALLER", "down"], ["SHADOW", "shadow"]]
 	var plate := MeshInstance3D.new()
 	var pm := QuadMesh.new()
 	pm.size = Vector2(BTN_W + 0.05, (BTN_H + BTN_GAP) * defs.size() + 0.05)
@@ -559,13 +536,11 @@ func _load_settings() -> bool:
 	var px := float(cfg.get_value("mh", "panel_x", _s_px))
 	var py := float(cfg.get_value("mh", "panel_y", _s_py))
 	var pz := float(cfg.get_value("mh", "panel_z", _s_pz))
-	var lk := int(cfg.get_value("mh", "look", _s_look))
 	sc = clampf(sc, 0.2, 4.0)
 	fr = clampf(fr, 0.3, 5.0)
 	var changed := (c != _s_char) or (not is_equal_approx(sc, _s_scale)) or (sh != _s_shadow) \
 		or (not is_equal_approx(fr, _s_front)) or (not is_equal_approx(hi, _s_height)) \
-		or (not is_equal_approx(px, _s_px)) or (not is_equal_approx(py, _s_py)) or (not is_equal_approx(pz, _s_pz)) \
-		or (lk != _s_look)
+		or (not is_equal_approx(px, _s_px)) or (not is_equal_approx(py, _s_py)) or (not is_equal_approx(pz, _s_pz))
 	_s_char = c
 	_s_scale = sc
 	_s_shadow = sh
@@ -574,7 +549,6 @@ func _load_settings() -> bool:
 	_s_px = px
 	_s_py = py
 	_s_pz = pz
-	_s_look = lk
 	return changed
 
 # Persist current settings (so the in-world panel and external writers share one source of truth).
@@ -588,7 +562,6 @@ func _save_settings() -> void:
 	cfg.set_value("mh", "panel_x", _s_px)
 	cfg.set_value("mh", "panel_y", _s_py)
 	cfg.set_value("mh", "panel_z", _s_pz)
-	cfg.set_value("mh", "look", _s_look)
 	cfg.save(SETTINGS)
 
 # Poll the cfg; apply diffs live. Character change → full reload (cheap re-instance); the rest are
@@ -597,18 +570,22 @@ func _poll_settings() -> void:
 	if _busy:
 		return
 	var prev_char := _s_char
-	if not _load_settings():
-		return
-	if _s_char != prev_char:
+	var changed := _load_settings()
+	if changed and _s_char != prev_char:
 		_reload_character()
-	else:
+		return
+	if changed:
 		_apply_scale()
 		_position_character()
-		_apply_shadow()
-		_apply_look()
-		if _panel:
-			_panel.position = Vector3(_s_px, _s_py, _s_pz)
 		_dump_meshes()
+	# Enforce every poll: release.gd re-creates its rig's shadows, so keep ALL shadows off (or our one
+	# directional on). Keep the panel at the viewer's eye height so it survives a recenter.
+	_apply_shadow()
+	if _panel and _cam:
+		_panel.position = Vector3(_s_px, _cam.global_position.y + _s_py, _s_pz)
+	# Re-match the figure's eye height if the head shifted a lot (a recenter), not on micro-movement.
+	if _cam and absf(_cam.global_position.y - _last_anchor_y) > 0.15:
+		_position_character()
 
 # Swap guy↔gal by re-instancing the release tool with the new RELEASE_CHAR (bulletproof — reuses the
 # whole boot path: convert/position/scale/hide). Costs a GLB reload (~1-2 s) but never half-applies.
