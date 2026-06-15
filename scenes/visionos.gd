@@ -49,6 +49,10 @@ const BTN_H := 0.085
 const BTN_GAP := 0.022
 const DWELL_SEC := 1.1
 const GAZE_LAYER := 2
+const TOUCH_ENABLED := false       # poke-to-press (hand tracking); gated off until a clean post-reboot device
+                                   # render is confirmed. The "boot issue" was diagnosed (crash report) as the
+                                   # CompositorServices -[CPImmersiveScene layer] SIGABRT (immersive-session
+                                   # wedge from relaunch churn) — NOT this code. Flip true once render is verified.
 const BTN_IDLE := Color(0.10, 0.13, 0.18, 0.85)
 const BTN_HOT := Color(0.10, 0.78, 0.98, 0.96)
 var _panel: Node3D
@@ -432,6 +436,7 @@ func ui_bump_scale(d: float) -> void:
 	_s_scale = clampf(_s_scale + d, 0.3, 3.0)
 	_save_settings()
 	_apply_scale()
+	_position_character()   # re-match eye height at the new scale (so the feet stay grounded)
 
 func ui_toggle_shadow() -> void:
 	_s_shadow = "off" if _s_shadow == "high" else "high"
@@ -519,6 +524,21 @@ func _update_gaze(delta: float) -> void:
 		return
 	if _cooldown > 0.0:
 		_cooldown -= delta
+	# Direct touch (poke): a fingertip inside a button's face fires it instantly. Additive to the
+	# gaze-dwell — active only when hand tracking has data (otherwise gaze alone still works).
+	if TOUCH_ENABLED and _cooldown <= 0.0:
+		for side in ["left_hand", "right_hand"]:
+			var tip = _index_tip_world(side)
+			if tip == null:
+				continue
+			var lp: Vector3 = _panel.to_local(tip)
+			for b in _buttons:
+				var bp: Vector3 = (b["area"] as Area3D).position
+				if absf(lp.x - bp.x) < BTN_W * 0.5 and absf(lp.y - bp.y) < BTN_H * 0.5 and absf(lp.z - bp.z) < 0.04:
+					_cooldown = 0.7
+					(b["mat"] as StandardMaterial3D).albedo_color = BTN_HOT
+					_activate(b["action"])
+					return
 	var from := _cam.global_position
 	var to := from - _cam.global_transform.basis.z * 3.0
 	var q := PhysicsRayQueryParameters3D.create(from, to)
@@ -542,6 +562,21 @@ func _update_gaze(delta: float) -> void:
 			# progress — a steady gaze still completes; a glance-away still cancels.
 			b["dwell"] = maxf(0.0, float(b["dwell"]) - delta * 0.7)
 		mat.albedo_color = BTN_IDLE.lerp(BTN_HOT, clampf(float(b["dwell"]) / DWELL_SEC, 0.0, 1.0))
+
+# Index fingertip in WORLD space (tracking-space joint through XROrigin) — for "poke" touch input.
+# Lifted from Cascade's _index_tip_world. Returns null when hand tracking has no data.
+func _index_tip_world(side: String):
+	var tname := "/user/hand_tracker/" + ("left" if side == "left_hand" else "right")
+	var ht := XRServer.get_tracker(tname) as XRHandTracker
+	if ht == null or not ht.get_has_tracking_data():
+		return null
+	var idx := XRHandTracker.HAND_JOINT_INDEX_FINGER_TIP
+	if not (int(ht.get_hand_joint_flags(idx)) & 8):   # HAND_JOINT_FLAG_POSITION_TRACKED
+		return null
+	var origin := get_node_or_null("XROrigin3D") as Node3D
+	if origin == null:
+		return null
+	return origin.global_transform * ht.get_hand_joint_transform(idx).origin
 
 # --- live settings ------------------------------------------------------------
 # Read user://mh_settings.cfg into _s_*. Returns true if any value changed since last read.
