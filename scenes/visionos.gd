@@ -1,56 +1,161 @@
 extends Node3D
-# visionOS / godotrealitykit harness for the MetaHumanGodot release tool.
+# visionOS XR harness for the MetaHumanGodot release tool — Godot's OWN renderer via
+# Apple's CompositorServices fork (rsanchezsaez/Clancey, PR #109975). NOT godotrealitykit.
 # ─────────────────────────────────────────────────────────────────────────────
-# SCOPING SPIKE (alex-mbp, 2026-06-14). Sibling to scenes/vr.gd (Quest standalone).
-# Where vr.gd targets Quest (OpenXR + Mobile/Vulkan, custom→StandardMaterial3D swap
-# gated to Android), THIS targets Apple's godotrealitykit plugin, where RealityKit
-# renders the Godot scene (App Role = Window → a volumetric window, "bust on a plinth").
+# PIVOT (alex-mbp, 2026-06-15). The earlier godotrealitykit (RealityKit-renders) spike proved
+# RealityKit renders the MetaHuman at BIND POSE and does not apply the skeletal skinning
+# (43 blendshapes, 874 face bones, leader-pose) — so the skinned face/body/eyes collapse to a
+# point at the origin and only the bone-attached grooms survive. There is no plugin knob to fix
+# it. Godot's OWN renderer (this path) skins MetaHumans natively — the desktop release tool does
+# it daily — AND runs in the visionOS Simulator + on device (Cascade Countdown is existence-proof).
+# See KB: projects/metahuman-godot-pipeline/visionos-port.md.
 #
-# Why the same StandardMaterial3D swap is needed here as on Quest:
-#   godotrealitykit's renderer supports PBR materials (StandardMaterial3D) and Visual
-#   Shaders, but NOT Godot GLSL text shaders (documentation/Rendering.md: "GLSL shaders ◻").
-#   The release tool's skin/eye/hair MatMADNESS shaders are GLSL `light()` shaders — exactly
-#   the ones the Adreno/Mobile renderer also can't compile. So the conversion that makes the
-#   MetaHuman work on Quest is the SAME bridge that makes it render under RealityKit.
+# Sibling to scenes/vr.gd (Quest standalone, OpenXR). Where vr.gd targets Quest (OpenXR +
+# Mobile/Vulkan), THIS targets the visionOS XR interface (XRServer.find_interface("visionOS"),
+# Mobile/Metal, immersive via CompositorServices).
 #
-# The _to_standard()/_coverage_to_alpha() conversion below is lifted verbatim from
-# scenes/vr.gd so the look matches the shipped Quest result. The two should be unified into a
-# shared helper once this path graduates from a spike. Quest code is deliberately untouched.
+# Why the StandardMaterial3D swap is STILL needed (same as Quest): the release tool's skin/eye/
+# hair MatMADNESS shaders are custom GLSL `light()` shaders. They do not compile on the visionOS
+# Mobile/Metal renderer (the same wall as Quest's Adreno). The _to_standard()/_coverage_to_alpha()
+# conversion below is lifted verbatim from scenes/vr.gd so the look matches the shipped Quest
+# result; unify into a shared helper once this graduates. Quest code is deliberately untouched.
+#
+# REQUIRED scene/project settings for this path (see godot-visionos-xr.md "Confirmed-working
+# recipe"): XROrigin3D.current=true, XRCamera3D.near>=0.1, WorldEnvironment bg alpha 0,
+# rendering_method="mobile", [xr] shaders/enabled=true. The silent-failure killer is
+# XROrigin3D.current — without it XR inits, the loop runs at 90fps, but frames are empty.
 #
 # Run modes:
-#   • godotrealitykit macOS debug render (reality_kit/debug_rendering_on_macos=true): RealityKit
-#     renders this scene inside a macOS window — no device/sim needed. Primary spike proof.
-#   • visionOS export, App Role = Window: builds an Xcode project → physical Apple Vision Pro.
-#     (The visionOS *Simulator* cannot host this — godotrealitykit ships a device-only template
-#     slice; see the KB doc projects/metahuman-godot-pipeline/visionos-port.md.)
-#   • Flat fallback (no godotrealitykit, plain Godot on macOS): set VISIONOS_FLAT=1 to render
-#     the swapped character with a normal Camera3D for a quick desktop sanity capture.
+#   • visionOS Simulator / device (CompositorServices): the visionOS XR interface initializes,
+#     the viewport goes use_xr + VRS_XR, and this scene renders immersively. Validate in the sim
+#     first (build.sh sim), then device (build.sh device).
+#   • Desktop fallback (plain Godot, no visionOS interface): a flat Camera3D frames the bust so a
+#     headless/editor run still shows the swapped character for a quick sanity capture.
 
 var _rel: Node3D
-var _vol: Node3D            # RealityVolumeCamera3D (godotrealitykit) if present in the scene
 const DBG_BLOB := false     # parity with vr.gd; never tint in the visionOS path
+# File-based diagnostics. Godot print() on the visionOS fork does NOT reach simctl's captured
+# stdout, so the verification artifacts are written into the app data container (user:// maps to
+# Documents/) and pulled with `xcrun simctl get_app_container <udid> <bundle> data`. Matches the
+# KB recipe (godot-visionos-xr.md "Diagnostic GDScript pattern").
+const DIAG := "user://mh_diag.txt"       # one-shot mesh dump + skinning verdict (written in _boot)
+const FRAMES := "user://mh_frames.txt"   # liveness samples (proves the 90 fps loop runs)
+var _xr_ok := false
+var _swapped := 0
+var _frames := 0
+var _samples := 0
+var _diag_t := 0.0
 
 func _ready() -> void:
 	# Load the guy by default (character.glb). release.gd reads RELEASE_CHAR (see vr.gd BOOT_AS_HER).
 	if not OS.has_environment("RELEASE_CHAR"):
 		OS.set_environment("RELEASE_CHAR", "guy")
-	_vol = get_node_or_null("RealityVolumeCamera3D")
+	_init_visionos_xr()
 	call_deferred("_boot")
+
+# Initialize the visionOS XR interface and route the viewport through it. Per the canonical
+# rsanchezsaez demo: find the interface, initialize(), then use_xr=true + vrs_mode=VRS_XR.
+# VRS_XR is REQUIRED for the layered compositor to produce output; XROrigin3D.current=true (set
+# in the .tscn AND re-asserted here) is the #1 silent-failure cause if missing.
+func _init_visionos_xr() -> void:
+	var interface := XRServer.find_interface("visionOS")
+	if interface and interface.initialize():
+		var vp := get_viewport()
+		vp.use_xr = true
+		vp.vrs_mode = Viewport.VRS_XR
+		var origin := get_node_or_null("XROrigin3D") as XROrigin3D
+		if origin:
+			origin.current = true
+		_xr_ok = true
+		print("[visionos-xr] visionOS XR interface initialized — use_xr + VRS_XR; origin current")
+	else:
+		# Not on visionOS (or interface unavailable): flat camera so a desktop/headless run shows
+		# the swapped bust. Framed by _position_character() once the character is loaded.
+		push_warning("[visionos-xr] visionOS interface unavailable — desktop flat-camera fallback")
+		var cam := Camera3D.new()
+		cam.name = "FlatFallbackCamera"
+		cam.near = 0.05
+		cam.far = 100.0
+		cam.current = true
+		add_child(cam)
 
 func _boot() -> void:
 	await get_tree().process_frame
 	_load_character()
 	# release.gd wires the custom GLSL ShaderMaterials synchronously in its _ready (during
-	# add_child). Convert them before RealityKit mirrors the scene. Grooms attach to the head
-	# bone a few frames later, so run a second pass (same two-pass timing as vr.gd).
+	# add_child). Convert them before the first rendered frame. Grooms attach to the head bone a
+	# few frames later, so run a second pass (same two-pass timing as vr.gd).
 	_convert_materials()
 	await get_tree().process_frame
 	await get_tree().process_frame
 	_convert_materials()
 	_hide_release_ui()
+	_disable_release_cameras()
 	_quiet_demo()
-	_frame_volume_on_character()
-	print("[visionos] ready — release tool instanced, materials -> StandardMaterial3D, volume framed")
+	_position_character()
+	_dump_meshes()
+	print("[visionos-xr] ready — release tool instanced, materials -> StandardMaterial3D, character placed")
+
+# Diagnostic: what meshes exist, are they skinned/blendshaped, where are they, how is the
+# material attached (override vs surface)? Under Godot's own renderer the skinned face/body/eyes
+# MUST now have real, head-height world AABBs (skinning applied) — NOT points at the origin (which
+# is the godotrealitykit bind-pose failure signature). Verify that before trusting any screenshot.
+func _dump_meshes() -> void:
+	if _rel == null:
+		return
+	var lines: Array[String] = []
+	lines.append("=== MetaHuman visionOS XR diag — Godot's OWN renderer (CompositorServices) ===")
+	lines.append("xr_interface_ok=%s  materials_swapped=%d  character_pos=%s" % [_xr_ok, _swapped, str(_rel.position)])
+	lines.append("PASS = skin/face/body meshes have real, HEAD-HEIGHT world AABBs (skinning applied).")
+	lines.append("FAIL (godotrealitykit signature) = those meshes are point-sized AABBs at the origin.")
+	lines.append("")
+	for mi in _rel.find_children("*", "MeshInstance3D", true, false):
+		var m := mi as MeshInstance3D
+		var aabb := m.global_transform * m.get_aabb()
+		var ctr := aabb.get_center()
+		var sz := aabb.size
+		var skinned := (m.skin != null) or (m.skeleton != NodePath() and m.get_node_or_null(m.skeleton) != null)
+		var bs := 0
+		if m.mesh and m.mesh is ArrayMesh:
+			bs = (m.mesh as ArrayMesh).get_blend_shape_count()
+		var ov := m.material_override.get_class() if m.material_override else "-"
+		var surfmats := ""
+		var sc := (m.mesh.get_surface_count() if m.mesh else 0)
+		for s in sc:
+			var sm := m.get_surface_override_material(s)
+			var src := "ovr" if sm else "mesh"
+			if sm == null and m.mesh:
+				sm = m.mesh.surface_get_material(s)
+			surfmats += "%s:%s " % [src, (sm.get_class() if sm else "null")]
+		var line := "[mesh] %-26s vis=%s skin=%s bs=%d surf=%d override=%s [%s] ctr=(%.2f,%.2f,%.2f) size=(%.2f,%.2f,%.2f)" \
+			% [m.name, m.visible, skinned, bs, sc, ov, surfmats.strip_edges(), ctr.x, ctr.y, ctr.z, sz.x, sz.y, sz.z]
+		lines.append(line)
+		print(line)
+	var f := FileAccess.open(DIAG, FileAccess.WRITE)
+	if f:
+		f.store_string("\n".join(lines) + "\n")
+		f.close()
+		print("[visionos-xr] wrote ", lines.size(), " diag lines -> ", DIAG)
+
+# Liveness sample: confirms the game loop actually runs (≈90 fps under the compositor → frames
+# accumulate). Written to the app container so it survives the (uncaptured) stdout. Stops after a
+# handful of samples to keep the file bounded. Distinguishes "scene loaded + skinned but not
+# presenting" from "engine hung / not running".
+func _process(delta: float) -> void:
+	_frames += 1
+	if _samples >= 6:
+		return
+	_diag_t += delta
+	if _diag_t >= 3.0:
+		_diag_t = 0.0
+		_samples += 1
+		var f := FileAccess.open(FRAMES, FileAccess.READ_WRITE)
+		if f == null:
+			f = FileAccess.open(FRAMES, FileAccess.WRITE)
+		if f:
+			f.seek_end()
+			f.store_string("sample %d: frames=%d xr_ok=%s\n" % [_samples, _frames, _xr_ok])
+			f.close()
 
 func _load_character() -> void:
 	var ps := load("res://scenes/release.tscn") as PackedScene
@@ -81,6 +186,7 @@ func _convert_materials() -> void:
 				if st:
 					m.set_surface_override_material(s, st)
 					swapped += 1
+	_swapped += swapped
 	print("[visionos] converted ", swapped, " ShaderMaterial(s) -> StandardMaterial3D")
 
 func _to_standard(sm: ShaderMaterial) -> StandardMaterial3D:
@@ -177,7 +283,7 @@ func _coverage_to_alpha(tex: Texture2D, rgb: Color, red_is_coverage: bool) -> Te
 	out.generate_mipmaps()
 	return ImageTexture.create_from_image(out)
 
-# Hide the desktop look-dev 2D UI (sliders/panels) — not wanted in the volume.
+# Hide the desktop look-dev 2D UI (sliders/panels) — not wanted in the immersive view.
 func _hide_release_ui() -> void:
 	if _rel == null:
 		return
@@ -186,8 +292,17 @@ func _hide_release_ui() -> void:
 	for c in _rel.find_children("*", "Control", true):
 		(c as CanvasItem).visible = false
 
+# release.gd creates its own Camera3D with current=true (look-dev framing). In XR that camera
+# would compete with the XRCamera3D for the viewport — disable every camera under the release
+# tool so the XRCamera (or the desktop flat fallback) is the only active one.
+func _disable_release_cameras() -> void:
+	if _rel == null:
+		return
+	for c in _rel.find_children("*", "Camera3D", true, false):
+		(c as Camera3D).current = false
+
 # Start a calm idle (face + body) but keep the per-frame hue-cycle lighting OFF (it re-renders
-# shadow maps every frame — needless cost under RealityKit, same call vr.gd makes on Android).
+# shadow maps every frame — needless cost, same call vr.gd makes on Android).
 func _quiet_demo() -> void:
 	if _rel == null:
 		return
@@ -198,53 +313,28 @@ func _quiet_demo() -> void:
 	if _rel.has_method("_set_color_cycle"):
 		_rel.call("_set_color_cycle", false)
 
-# Size + center the RealityVolumeCamera3D on the character's head so the volume shows a
-# head-and-shoulders bust. The volume + the RealityKit shadow node are created from script (only
-# when the godotrealitykit extension is loaded) so the .tscn stays vanilla and imports even in
-# plain Godot. Falls back to a flat Camera3D framing if VISIONOS_FLAT=1.
-func _frame_volume_on_character() -> void:
+# Place the character so its (skinned) head sits ~0.9 m in front of the user at a comfortable
+# eye line. Under Godot's OWN renderer the skeleton skins the meshes, so the head AABB is real
+# and head-height (unlike godotrealitykit, where the unskinned face collapsed to the origin).
+# In immersive XR the XROrigin3D is the floor and the XRCamera3D tracks the user's real head, so
+# we push the character back along -Z and lift it so the head lands ~1.5 m. Tunable via env:
+# MH_FRONT (forward distance, default 0.90) and MH_HEAD_Y (target head height, default 1.50).
+func _position_character() -> void:
+	if _rel == null:
+		return
 	var head := _character_head_y()
-	# Clamp out the backdrop/floor: the owned=false AABB scan catches the huge studio cyc mesh
-	# (head_y read ~26 m), so fall back to a sane human head height when it's out of range
-	# (same guard vr.gd uses in _frame_to_character).
+	# Clamp out a stray backdrop/floor AABB (same guard vr.gd uses): fall back to a human head.
 	if head < 0.5 or head > 3.0:
 		head = 1.65
-	# Center the volume on the face (~just below eye line) for a head-and-shoulders bust.
-	var center := Vector3(0, head - 0.10, 0)
-	# Create the RealityVolumeCamera3D if the extension class exists and none is in the scene.
-	if _vol == null and ClassDB.class_exists("RealityVolumeCamera3D"):
-		_vol = ClassDB.instantiate("RealityVolumeCamera3D")
-		_vol.name = "RealityVolumeCamera3D"
-		add_child(_vol)
-	# Preview cam for the macOS debug render / editor (guard: the volume may auto-create one).
-	if _vol and _vol.get_node_or_null("PreviewCamera") == null:
-		var prev := Camera3D.new()
-		prev.name = "PreviewCamera"
-		prev.near = 0.05
-		_vol.add_child(prev)
-		prev.global_position = center + Vector3(0, 0.02, 1.05)
-		prev.look_at(center, Vector3.UP)
-	# Attach a RealityKit shadow node to the first DirectionalLight3D (godotrealitykit shadows).
-	if ClassDB.class_exists("RealityKitDirectionalLightShadow3D"):
-		var dl := get_node_or_null("DirectionalLight3D")
-		if dl and dl.get_node_or_null("RealityKitDirectionalLightShadow3D") == null:
-			var sh = ClassDB.instantiate("RealityKitDirectionalLightShadow3D")
-			sh.name = "RealityKitDirectionalLightShadow3D"
-			dl.add_child(sh)
-	if _vol:
-		_vol.global_position = center
-		if "size" in _vol:
-			_vol.set("size", 1.4)   # ~1.4 m volume → head + shoulders bust
-		print("[visionos] volume centered at ", center, " (head y=", head, ")")
-	if OS.has_environment("VISIONOS_FLAT"):
-		var cam := Camera3D.new()
-		cam.near = 0.05
-		cam.far = 100.0
-		cam.current = true
-		add_child(cam)
-		cam.global_position = center + Vector3(0, 0, 0.9)
-		cam.look_at(center, Vector3.UP)
-		print("[visionos] FLAT camera framing the bust at ", center)
+	var front := 0.90
+	if OS.has_environment("MH_FRONT"):
+		front = float(OS.get_environment("MH_FRONT"))
+	var target_head_y := 1.50
+	if OS.has_environment("MH_HEAD_Y"):
+		target_head_y = float(OS.get_environment("MH_HEAD_Y"))
+	_rel.position = Vector3(0.0, target_head_y - head, -front)
+	print("[visionos-xr] character placed: local head_y=%.2f -> world head ~(0, %.2f, %.2f)" \
+		% [head, target_head_y, -front])
 
 func _character_head_y() -> float:
 	if _rel == null:

@@ -1,18 +1,25 @@
 [gd_scene load_steps=3 format=3]
 
-; visionOS / godotrealitykit entry scene (scoping spike, 2026-06-14).
-; Vanilla on purpose: the character is instanced at runtime by visionos.gd, and the
-; RealityVolumeCamera3D + RealityKitDirectionalLightShadow3D are created from script only
-; when the godotrealitykit extension is loaded — so this scene imports in plain Godot too.
+; visionOS XR entry scene — Godot's OWN renderer via Apple's CompositorServices fork
+; (rsanchezsaez/Clancey, PR #109975). NOT godotrealitykit. The character is instanced at
+; runtime by visionos.gd (which also runs the StandardMaterial3D swap + places it ~0.9 m in
+; front of the user). XR rig mirrors the confirmed-working rsanchezsaez demo / Cascade Countdown
+; structure: XROrigin3D.current → XRCamera3D.near=0.1 → AudioListener3D. WorldEnvironment
+; background alpha 0 so the compositor composites the bust over passthrough (mixed) or void (full).
 
 [ext_resource type="Script" path="res://scenes/visionos.gd" id="1"]
 
 [sub_resource type="Environment" id="Environment_1"]
-background_mode = 0
+background_mode = 1
 background_color = Color(0, 0, 0, 0)
 ambient_light_source = 2
-ambient_light_color = Color(0.55, 0.6, 0.72, 1)
-ambient_light_energy = 0.35
+ambient_light_color = Color(0.5, 0.54, 0.62, 1)
+; Ambient was 0.35 — too much flat fill drowned the directional shaping (washed-out skin). Lower
+; fill + a slight exposure pull restores form/contrast. tonemap_mode left at Linear (default): the
+; only tonemapper variant confirmed compiled on this visionOS fork (Cascade proves it); AgX/Filmic
+; risk a missing-variant magenta/blank render, so exposure is the safe contrast lever here.
+ambient_light_energy = 0.2
+tonemap_exposure = 0.9
 
 [node name="VisionOS" type="Node3D"]
 script = ExtResource("1")
@@ -20,7 +27,15 @@ script = ExtResource("1")
 [node name="WorldEnvironment" type="WorldEnvironment" parent="."]
 environment = SubResource("Environment_1")
 
+[node name="XROrigin3D" type="XROrigin3D" parent="."]
+current = true
+
+[node name="XRCamera3D" type="XRCamera3D" parent="XROrigin3D"]
+near = 0.1
+
+[node name="AudioListener3D" type="AudioListener3D" parent="XROrigin3D/XRCamera3D"]
+
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
 transform = Transform3D(0.86, -0.25, 0.44, 0, 0.87, 0.49, -0.51, -0.42, 0.75, 0, 3, 0)
-light_energy = 0.9
+light_energy = 1.05
 shadow_enabled = true

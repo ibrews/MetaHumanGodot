@@ -17,12 +17,12 @@ compatibility/default_parent_skeleton_in_mesh_instance_3d=true
 config/name="Digital Human Test"
 config/description="MetaHuman exported from UE5 5.7 → Blender → Godot 4.6 with MatMADNESS HumanShaders.
 First fleet run; documenting gotchas in the KB technique doc."
-; SPIKE (visionOS port, alex-mbp 2026-06-14): main scene + main loop switched to the
-; godotrealitykit path. Quest/canonical main scene is "res://scenes/vr.tscn" (restore to ship
-; Quest). main_loop_type=RealitySceneTree hands the main loop to godotrealitykit (RealityKit
-; renders). These deltas are LOCAL ONLY — not pushed to ibrews/MetaHumanGodot.
+; visionOS port (alex-mbp): main scene = the CompositorServices XR harness. Godot's OWN renderer
+; skins the MetaHuman natively (the earlier godotrealitykit path rendered bind pose only → only
+; grooms showed). Quest/canonical main scene is "res://scenes/vr.tscn" (restore to ship Quest).
+; No main_loop_type override: the visionOS XR path uses the normal SceneTree + the visionOS XR
+; interface (XRServer.find_interface("visionOS")), not godotrealitykit's RealitySceneTree.
 run/main_scene="res://scenes/visionos.tscn"
-run/main_loop_type="RealitySceneTree"
 config/features=PackedStringArray("4.6", "Mobile")
 config/icon="res://icon.png"
 
@@ -64,11 +64,11 @@ lights_and_shadows/positional_shadow/soft_shadow_filter_quality=1
 
 [xr]
 
-; SPIKE: openxr DISABLED for the visionOS/godotrealitykit path. With it true, Godot auto-inits
-; the OpenXR-OSX runtime installed on this Mac (~/godot-visionos-pilot/OpenXR-OSX), which starts a
-; headset-streaming server and hijacks the output ("No viewport was marked with use_xr, there is no
-; rendered output!") — godotrealitykit (RealityKit) is the renderer here, not OpenXR. Quest path
-; needs this true; visionOS path needs it false. (Another reason to split a `visionos` branch.)
+; visionOS path: OpenXR DISABLED. visionOS uses its OWN XR interface — XRServer.find_interface
+; ("visionOS") via CompositorServices — NOT OpenXR. With openxr/enabled true, Godot also auto-inits
+; the OpenXR-OSX runtime on this Mac (~/godot-visionos-pilot/OpenXR-OSX), which starts a headset-
+; streaming server and competes for output ("No viewport was marked with use_xr"). Quest path needs
+; this true; the visionOS path needs it false. (One reason this is a separate `visionos` branch.)
 openxr/enabled=false
 openxr/default_action_map="res://openxr_action_map.tres"
 shaders/enabled=true
@@ -85,15 +85,6 @@ openxr/extensions/hand_tracking=true
 ; left-eye seam) on demand to judge the trade-off.
 openxr/extensions/meta/application_space_warp=true
 
-; --- visionOS / godotrealitykit (SPIKE, local only) ---------------------------
-; Enables Apple's GodotRealityKit plugin (copied into addons/, which is .gitignored).
-; debug_rendering_on_macos lets RealityKit render this scene in a macOS window — no
-; device/sim needed (the visionOS Simulator cannot host godotrealitykit; it ships a
-; device-only template slice). presentation_style defaults to Volumetric Window.
-[editor_plugins]
-
-enabled=PackedStringArray("res://addons/GodotRealityKit/plugin.cfg")
-
-[reality_kit]
-
-debug_rendering_on_macos=true
+; NOTE: the godotrealitykit editor plugin + [reality_kit] section were removed for the
+; CompositorServices XR path (Godot's own renderer). godotrealitykit rendered the MetaHuman at
+; bind pose (no skinning) — see KB projects/metahuman-godot-pipeline/visionos-port.md.
