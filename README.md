@@ -1,7 +1,7 @@
 # MetaHuman → Godot Look-Dev
 
 > ⚠️ **Not an Epic Games or Godot Foundation product.** This is an independent,
-> community tool made by Agile Lens. It is **not** created, published, endorsed,
+> community tool made by Alex Coulombe. It is **not** created, published, endorsed,
 > sponsored by, or affiliated with Epic Games or the Godot Foundation, and is
 > **not** official MetaHuman, Unreal Engine, or Godot software. The repository
 > name "MetaHumanGodot" describes what the tool *works with* — it does not imply
@@ -183,6 +183,33 @@ model, use **Load custom character** — it wires by material name and unit-norm
 automatically. *(The full automated UE → Blender → Godot export pipeline — which
 produces `character.glb` for you, including the ARKit morph bake — is a separate
 offering; see [The full pipeline](#the-full-pipeline).)*
+
+## Apple Vision Pro (visionOS) — branch `visionos`
+
+The **`visionos`** branch runs the **full skinned MetaHuman on Apple Vision Pro** — skin, face
+(43 blendshapes), eyes, hair/beard, and body — rendered immersively by **Godot's own renderer** via
+Apple's CompositorServices visionOS contribution (PR
+[#109975](https://github.com/godotengine/godot/pull/109975)), the same engine path as
+[Cascade Countdown](https://github.com/ibrews/godot-avp-cascade). Confirmed in the visionOS 26.5
+Simulator and on a physical Apple Vision Pro at ~90 fps.
+
+`scenes/visionos.tscn` + `scenes/visionos.gd` wrap the release tool in a visionOS XR rig and run the
+custom GLSL skin/eye/hair shaders through a runtime **StandardMaterial3D swap** (the custom shaders
+don't compile on the visionOS Mobile/Metal renderer — the same wall as the Quest build's Adreno).
+
+### Things to Try (visionOS)
+
+1. **Build to the Simulator** with the CompositorServices fork tooling —
+   [godot-visionos-simulator-kit](https://github.com/ibrews/godot-visionos-simulator-kit) — then
+   point its `build.sh` at this project.
+2. **Switch the figure** between the two MetaHumans (guy / gal), **scale** it, and **toggle the
+   shadow** — live, with no rebuild, via `user://mh_settings.cfg`.
+3. **Use the in-world control panel** — glance at a button (lower-left) for ~1 second to fire it; no
+   controllers or hand tracking required (head-gaze dwell).
+4. **Run it on a real Apple Vision Pro** and walk around the figure in your room (mixed immersion).
+
+> **Gotchas (hard-won):** MSAA must be **off** (it renders empty on-device on this engine fork);
+> export scripts in **Text** mode (`script_export_mode=0`); the renderer must be **Mobile**.
 
 ## Licensing
 
