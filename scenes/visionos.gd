@@ -27,9 +27,9 @@ const POLL_DT := 0.5               # how often to re-read the settings cfg (seco
 # --- applied settings (mirror of the cfg; defaults) ---------------------------
 var _s_char := "guy"               # "guy" | "her"
 var _s_scale := 1.0                # uniform scale of the figure
-var _s_shadow := "high"            # "off" | "high"
+var _s_shadow := "off"             # "off" | "high" — default OFF; toggle to crisp hi-res self-shadow
 var _s_front := 0.9                # metres in front of the user
-var _s_height := 0.0               # feet Y (0 = on the floor)
+var _s_height := 0.0               # manual eye-height nudge (m); 0 = eyes level with the viewer
 
 # --- state --------------------------------------------------------------------
 var _rel: Node3D
@@ -80,6 +80,7 @@ func _init_visionos_xr() -> void:
 		var origin := get_node_or_null("XROrigin3D") as XROrigin3D
 		if origin:
 			origin.current = true
+		_cam = get_node_or_null("XROrigin3D/XRCamera3D") as XRCamera3D
 		_xr_ok = true
 		print("[visionos-xr] visionOS XR interface initialized — use_xr + VRS_XR; MSAA off; FXAA on")
 	else:
@@ -116,8 +117,8 @@ func _setup_loaded_character() -> void:
 	_hide_release_ui()
 	_disable_release_cameras()
 	_quiet_demo()
-	_position_character()
 	_apply_scale()
+	_position_character()
 	_hide_studio_meshes()
 
 # Diagnostic written to the app container (Godot stdout isn't captured on this fork). The full
@@ -326,9 +327,48 @@ func _quiet_demo() -> void:
 func _position_character() -> void:
 	if _rel == null:
 		return
-	_rel.position = Vector3(0.0, _s_height, -_s_front)
+	_rel.position.x = 0.0
+	_rel.position.z = -_s_front
 	_rel.rotation = Vector3(0.0, deg_to_rad(FACE_USER_YAW_DEG), 0.0)
-	print("[visionos-xr] placed: feet y=%.2f, front=%.2f m, yaw +%.0f°" % [_s_height, _s_front, FACE_USER_YAW_DEG])
+	_match_eye_height()
+	print("[visionos-xr] placed: eye-matched y=%.2f, front=%.2f m, scale=%.2f, yaw +%.0f°" \
+		% [_rel.position.y, _s_front, _s_scale, FACE_USER_YAW_DEG])
+
+# Sit the figure so its eyes are at the VIEWER's eye height (XRCamera Y) — feet then fall naturally
+# on the floor, at any scale (the user asked to match eyes, not feet). This is robust to the root-
+# pivot ambiguity that left the feet underground when placing the root at y=0. _s_height is a manual
+# nudge on top (0 = level with the viewer).
+func _match_eye_height() -> void:
+	if _rel == null:
+		return
+	if _cam == null:
+		_rel.position.y = _s_height   # desktop / no-XR fallback
+		return
+	var eye := _character_eye_y()
+	# eye_y is linear in _rel.position.y, so this moves the eyes exactly onto the target.
+	_rel.position.y += (_cam.global_position.y + _s_height) - eye
+
+# World Y of the character's eyes, estimated from the head grooms (hair/brows/beard — real AABBs).
+# The skinned face/body report a COLLAPSED get_aabb() (GPU skinning) so they're skipped; the studio
+# backdrop/floor is hidden / oversized so it's skipped too.
+func _character_eye_y() -> float:
+	if _rel == null:
+		return 1.5
+	var aabb := AABB()
+	var first := true
+	for mi in _rel.find_children("*", "MeshInstance3D", true, false):
+		var m := mi as MeshInstance3D
+		if not m.visible:
+			continue
+		var b := m.global_transform * m.get_aabb()
+		var mx := maxf(b.size.x, maxf(b.size.y, b.size.z))
+		if mx < 0.03 or mx > 4.0:   # skip collapsed skinned meshes and oversized studio geo
+			continue
+		aabb = b if first else aabb.merge(b)
+		first = false
+	if first:
+		return _rel.global_position.y + 1.5
+	return aabb.end.y - 0.12   # crown of the grooms minus ~12 cm ≈ eye line
 
 # Uniform scale about the figure's origin (feet) — grows/shrinks upward from the floor.
 func _apply_scale() -> void:
@@ -346,9 +386,9 @@ func _apply_shadow() -> void:
 		dl.shadow_enabled = true
 		dl.shadow_bias = 0.03
 		dl.shadow_normal_bias = 1.2
-		dl.shadow_blur = 1.0
+		dl.shadow_blur = 1.5
 		dl.directional_shadow_mode = DirectionalLight3D.SHADOW_ORTHOGONAL
-		dl.directional_shadow_max_distance = 6.0
+		dl.directional_shadow_max_distance = 2.5   # tight on the figure → ~6x texel density vs 100 m default (crisp)
 	else:
 		dl.shadow_enabled = false
 
@@ -525,8 +565,8 @@ func _poll_settings() -> void:
 	if _s_char != prev_char:
 		_reload_character()
 	else:
-		_position_character()
 		_apply_scale()
+		_position_character()
 		_apply_shadow()
 		if _panel:
 			_panel.position = Vector3(_s_px, _s_py, _s_pz)
