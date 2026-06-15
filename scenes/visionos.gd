@@ -30,6 +30,16 @@ var _s_scale := 1.0                # uniform scale of the figure
 var _s_shadow := "off"             # "off" | "high" — default OFF; toggle to crisp hi-res self-shadow
 var _s_front := 0.9                # metres in front of the user
 var _s_height := 0.0               # manual eye-height nudge (m); 0 = eyes level with the viewer
+var _s_look := 1                   # look preset index (LOOK_PRESETS); cfg key "look". 1 = more contrast
+
+# Look presets for the in-world LOOK button (and cfg "look"=N) — vary ambient fill + post contrast +
+# exposure; one AGX entry to try the filmic tonemapper. Applied to the WorldEnvironment live.
+const LOOK_PRESETS := [
+	{"n": "soft",     "amb": 0.20, "con": 1.00, "exp": 0.90, "agx": false},
+	{"n": "contrast", "amb": 0.12, "con": 1.30, "exp": 0.95, "agx": false},
+	{"n": "punchy",   "amb": 0.06, "con": 1.55, "exp": 1.00, "agx": false},
+	{"n": "agx",      "amb": 0.15, "con": 1.10, "exp": 1.05, "agx": true},
+]
 
 # --- state --------------------------------------------------------------------
 var _rel: Node3D
@@ -98,9 +108,10 @@ func _boot() -> void:
 	_load_character()
 	await _setup_loaded_character()
 	_apply_shadow()
+	_apply_look()
 	_build_panel()
 	_dump_meshes()
-	print("[visionos-xr] ready — char=%s scale=%.2f shadow=%s front=%.2f" % [_s_char, _s_scale, _s_shadow, _s_front])
+	print("[visionos-xr] ready — char=%s scale=%.2f shadow=%s look=%d front=%.2f" % [_s_char, _s_scale, _s_shadow, _s_look, _s_front])
 
 func _load_character() -> void:
 	var ps := load("res://scenes/release.tscn") as PackedScene
@@ -379,18 +390,39 @@ func _apply_scale() -> void:
 # Directional shadow: OFF, or HIGH (crisp self-shadowing — 4096 map via project.godot + tuned bias,
 # a single orthogonal split tight on the figure so it isn't blocky).
 func _apply_shadow() -> void:
+	# release.gd builds its OWN rig — key/fill/rim SpotLights + a "HairRake" spot, several with
+	# shadow_enabled. THOSE (blocky, low positional-shadow filter) were the "other shadow" the toggle
+	# never touched. Force EVERY light's shadow off first, so OFF really is off.
+	for n in find_children("*", "Light3D", true, false):
+		(n as Light3D).shadow_enabled = false
+	# Our single directional is the toggle: OFF, or one crisp hi-res self-shadow.
 	var dl := get_node_or_null("DirectionalLight3D") as DirectionalLight3D
-	if dl == null:
-		return
-	if _s_shadow == "high":
+	if dl and _s_shadow == "high":
 		dl.shadow_enabled = true
-		dl.shadow_bias = 0.03
-		dl.shadow_normal_bias = 1.2
+		dl.shadow_bias = 0.04
+		dl.shadow_normal_bias = 2.0
 		dl.shadow_blur = 1.5
 		dl.directional_shadow_mode = DirectionalLight3D.SHADOW_ORTHOGONAL
-		dl.directional_shadow_max_distance = 2.5   # tight on the figure → ~6x texel density vs 100 m default (crisp)
-	else:
-		dl.shadow_enabled = false
+		dl.directional_shadow_max_distance = 2.5   # tight on the figure → high texel density (crisp)
+
+# Apply look preset _s_look to the WorldEnvironment (ambient fill + post contrast + exposure + tonemap).
+func _apply_look() -> void:
+	var we := get_node_or_null("WorldEnvironment") as WorldEnvironment
+	if we == null or we.environment == null:
+		return
+	var e := we.environment
+	var p = LOOK_PRESETS[_s_look % LOOK_PRESETS.size()]
+	e.ambient_light_energy = p["amb"]
+	e.adjustment_enabled = true
+	e.adjustment_contrast = p["con"]
+	e.tonemap_exposure = p["exp"]
+	e.tonemap_mode = Environment.TONE_MAPPER_AGX if p["agx"] else Environment.TONE_MAPPER_LINEAR
+	print("[visionos-xr] look %d=%s amb=%.2f con=%.2f exp=%.2f agx=%s" % [_s_look % LOOK_PRESETS.size(), p["n"], p["amb"], p["con"], p["exp"], p["agx"]])
+
+func _cycle_look() -> void:
+	_s_look = (_s_look + 1) % LOOK_PRESETS.size()
+	_save_settings()
+	_apply_look()
 
 # --- UI actions (also persist to the cfg so panel + external writers share one source) --------
 func ui_toggle_char() -> void:
@@ -421,6 +453,7 @@ func _activate(action: String) -> void:
 		"up": ui_bump_scale(0.15)
 		"down": ui_bump_scale(-0.15)
 		"shadow": ui_toggle_shadow()
+		"look": _cycle_look()
 
 # Floating gaze-dwell control panel: look at a button for DWELL_SEC and it fires (a filling
 # cyan tint shows progress). Head-only — works on device with no hand tracking, and renders in the
@@ -434,7 +467,7 @@ func _build_panel() -> void:
 	_panel.name = "ControlPanel"
 	add_child(_panel)
 	_panel.position = Vector3(_s_px, _s_py, _s_pz)
-	var defs := [["GUY / GAL", "char"], ["BIGGER", "up"], ["SMALLER", "down"], ["SHADOW", "shadow"]]
+	var defs := [["GUY / GAL", "char"], ["BIGGER", "up"], ["SMALLER", "down"], ["SHADOW", "shadow"], ["LOOK", "look"]]
 	var plate := MeshInstance3D.new()
 	var pm := QuadMesh.new()
 	pm.size = Vector2(BTN_W + 0.05, (BTN_H + BTN_GAP) * defs.size() + 0.05)
@@ -526,11 +559,13 @@ func _load_settings() -> bool:
 	var px := float(cfg.get_value("mh", "panel_x", _s_px))
 	var py := float(cfg.get_value("mh", "panel_y", _s_py))
 	var pz := float(cfg.get_value("mh", "panel_z", _s_pz))
+	var lk := int(cfg.get_value("mh", "look", _s_look))
 	sc = clampf(sc, 0.2, 4.0)
 	fr = clampf(fr, 0.3, 5.0)
 	var changed := (c != _s_char) or (not is_equal_approx(sc, _s_scale)) or (sh != _s_shadow) \
 		or (not is_equal_approx(fr, _s_front)) or (not is_equal_approx(hi, _s_height)) \
-		or (not is_equal_approx(px, _s_px)) or (not is_equal_approx(py, _s_py)) or (not is_equal_approx(pz, _s_pz))
+		or (not is_equal_approx(px, _s_px)) or (not is_equal_approx(py, _s_py)) or (not is_equal_approx(pz, _s_pz)) \
+		or (lk != _s_look)
 	_s_char = c
 	_s_scale = sc
 	_s_shadow = sh
@@ -539,6 +574,7 @@ func _load_settings() -> bool:
 	_s_px = px
 	_s_py = py
 	_s_pz = pz
+	_s_look = lk
 	return changed
 
 # Persist current settings (so the in-world panel and external writers share one source of truth).
@@ -552,6 +588,7 @@ func _save_settings() -> void:
 	cfg.set_value("mh", "panel_x", _s_px)
 	cfg.set_value("mh", "panel_y", _s_py)
 	cfg.set_value("mh", "panel_z", _s_pz)
+	cfg.set_value("mh", "look", _s_look)
 	cfg.save(SETTINGS)
 
 # Poll the cfg; apply diffs live. Character change → full reload (cheap re-instance); the rest are
@@ -568,6 +605,7 @@ func _poll_settings() -> void:
 		_apply_scale()
 		_position_character()
 		_apply_shadow()
+		_apply_look()
 		if _panel:
 			_panel.position = Vector3(_s_px, _s_py, _s_pz)
 		_dump_meshes()
