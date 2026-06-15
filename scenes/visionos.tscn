@@ -38,4 +38,8 @@ near = 0.1
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
 transform = Transform3D(0.86, -0.25, 0.44, 0, 0.87, 0.49, -0.51, -0.42, 0.75, 0, 3, 0)
 light_energy = 1.05
-shadow_enabled = true
+; Shadow OFF: the directional shadow map shimmers on the thin alpha-scissor hair cards (flicker),
+; especially with MSAA off on this fork. N·L shading + ambient still give the face form, and a
+; figure floating in passthrough has no floor to catch a contact shadow. Re-enable with tuned
+; bias/blur (or per-mesh cast_shadow) if self-shadowing is wanted later.
+shadow_enabled = false

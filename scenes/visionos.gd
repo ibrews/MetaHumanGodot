@@ -1,76 +1,72 @@
 extends Node3D
-# visionOS XR harness for the MetaHumanGodot release tool — Godot's OWN renderer via
-# Apple's CompositorServices fork (rsanchezsaez/Clancey, PR #109975). NOT godotrealitykit.
+# visionOS XR harness for the MetaHumanGodot release tool — Godot's OWN renderer via Apple's
+# CompositorServices fork (rsanchezsaez/Clancey, PR #109975). NOT godotrealitykit.
 # ─────────────────────────────────────────────────────────────────────────────
-# PIVOT (alex-mbp, 2026-06-15). The earlier godotrealitykit (RealityKit-renders) spike proved
-# RealityKit renders the MetaHuman at BIND POSE and does not apply the skeletal skinning
-# (43 blendshapes, 874 face bones, leader-pose) — so the skinned face/body/eyes collapse to a
-# point at the origin and only the bone-attached grooms survive. There is no plugin knob to fix
-# it. Godot's OWN renderer (this path) skins MetaHumans natively — the desktop release tool does
-# it daily — AND runs in the visionOS Simulator + on device (Cascade Countdown is existence-proof).
-# See KB: projects/metahuman-godot-pipeline/visionos-port.md.
+# Godot's renderer skins MetaHumans natively (godotrealitykit rendered bind pose only → only the
+# grooms showed). Validated in the visionOS Simulator AND on a physical AVP. See KB:
+# projects/metahuman-godot-pipeline/visionos-port.md.
 #
-# Sibling to scenes/vr.gd (Quest standalone, OpenXR). Where vr.gd targets Quest (OpenXR +
-# Mobile/Vulkan), THIS targets the visionOS XR interface (XRServer.find_interface("visionOS"),
-# Mobile/Metal, immersive via CompositorServices).
+# Custom GLSL skin/eye/hair shaders don't compile on the visionOS Mobile/Metal renderer (same wall
+# as Quest's Adreno), so _to_standard()/_coverage_to_alpha() (lifted verbatim from scenes/vr.gd)
+# swap them to StandardMaterial3D before the first frame.
 #
-# Why the StandardMaterial3D swap is STILL needed (same as Quest): the release tool's skin/eye/
-# hair MatMADNESS shaders are custom GLSL `light()` shaders. They do not compile on the visionOS
-# Mobile/Metal renderer (the same wall as Quest's Adreno). The _to_standard()/_coverage_to_alpha()
-# conversion below is lifted verbatim from scenes/vr.gd so the look matches the shipped Quest
-# result; unify into a shared helper once this graduates. Quest code is deliberately untouched.
+# MSAA MUST be off on this fork (Cascade/godot#78598) — with it on, the device renders only
+# passthrough ("purgatory"). Forced off here + in project.godot.
 #
-# REQUIRED scene/project settings for this path (see godot-visionos-xr.md "Confirmed-working
-# recipe"): XROrigin3D.current=true, XRCamera3D.near>=0.1, WorldEnvironment bg alpha 0,
-# rendering_method="mobile", [xr] shaders/enabled=true. The silent-failure killer is
-# XROrigin3D.current — without it XR inits, the loop runs at 90fps, but frames are empty.
-#
-# Run modes:
-#   • visionOS Simulator / device (CompositorServices): the visionOS XR interface initializes,
-#     the viewport goes use_xr + VRS_XR, and this scene renders immersively. Validate in the sim
-#     first (build.sh sim), then device (build.sh device).
-#   • Desktop fallback (plain Godot, no visionOS interface): a flat Camera3D frames the bust so a
-#     headless/editor run still shows the swapped character for a quick sanity capture.
+# LIVE SETTINGS (user://mh_settings.cfg, polled): character (guy/her), scale, shadow (off/high),
+# placement (front/height). Write the cfg into the app container and the change applies without a
+# rebuild (sim: the Documents/ path; device: the in-world control panel). Defaults below.
 
+# --- tunables -----------------------------------------------------------------
+const FACE_USER_YAW_DEG := 90.0    # rotate the rig CCW so the figure faces the viewer
+const DIAG := "user://mh_diag.txt"        # one-shot mesh dump + skinning verdict
+const FRAMES := "user://mh_frames.txt"    # liveness samples (proves the loop runs)
+const SETTINGS := "user://mh_settings.cfg"
+const POLL_DT := 0.5               # how often to re-read the settings cfg (seconds)
+
+# --- applied settings (mirror of the cfg; defaults) ---------------------------
+var _s_char := "guy"               # "guy" | "her"
+var _s_scale := 1.0                # uniform scale of the figure
+var _s_shadow := "high"            # "off" | "high"
+var _s_front := 0.9                # metres in front of the user
+var _s_height := 0.0               # feet Y (0 = on the floor)
+
+# --- state --------------------------------------------------------------------
 var _rel: Node3D
-const DBG_BLOB := false     # parity with vr.gd; never tint in the visionOS path
-# File-based diagnostics. Godot print() on the visionOS fork does NOT reach simctl's captured
-# stdout, so the verification artifacts are written into the app data container (user:// maps to
-# Documents/) and pulled with `xcrun simctl get_app_container <udid> <bundle> data`. Matches the
-# KB recipe (godot-visionos-xr.md "Diagnostic GDScript pattern").
-const DIAG := "user://mh_diag.txt"       # one-shot mesh dump + skinning verdict (written in _boot)
-const FRAMES := "user://mh_frames.txt"   # liveness samples (proves the 90 fps loop runs)
 var _xr_ok := false
 var _swapped := 0
 var _frames := 0
 var _samples := 0
 var _diag_t := 0.0
+var _poll_t := 0.0
+var _busy := false                 # guards against overlapping reloads
 
 func _ready() -> void:
-	# Load the guy by default (character.glb). release.gd reads RELEASE_CHAR (see vr.gd BOOT_AS_HER).
-	if not OS.has_environment("RELEASE_CHAR"):
-		OS.set_environment("RELEASE_CHAR", "guy")
+	_load_settings()                       # read cfg → _s_* before instancing so the right char boots
+	OS.set_environment("RELEASE_CHAR", _s_char)
 	_init_visionos_xr()
 	call_deferred("_boot")
 
-# Initialize the visionOS XR interface and route the viewport through it. Per the canonical
-# rsanchezsaez demo: find the interface, initialize(), then use_xr=true + vrs_mode=VRS_XR.
-# VRS_XR is REQUIRED for the layered compositor to produce output; XROrigin3D.current=true (set
-# in the .tscn AND re-asserted here) is the #1 silent-failure cause if missing.
+# Initialize the visionOS XR interface and route the viewport through it. MSAA/FSR/screen-space-AA
+# forced off — MSAA does not render on this fork on-device (Cascade: godot#78598), and the project
+# default (Quest inherited msaa_3d=1) would otherwise reintroduce the empty render.
 func _init_visionos_xr() -> void:
 	var interface := XRServer.find_interface("visionOS")
 	if interface and interface.initialize():
 		var vp := get_viewport()
 		vp.use_xr = true
 		vp.vrs_mode = Viewport.VRS_XR
+		vp.msaa_3d = Viewport.MSAA_DISABLED
+		vp.scaling_3d_mode = Viewport.SCALING_3D_MODE_BILINEAR
+		# FXAA is a post-process pass (NOT the hardware MSAA that's broken here) — it smooths the
+		# alpha-scissor hair/beard card edges that otherwise alias into a blocky/flickering mass.
+		vp.screen_space_aa = Viewport.SCREEN_SPACE_AA_FXAA
 		var origin := get_node_or_null("XROrigin3D") as XROrigin3D
 		if origin:
 			origin.current = true
 		_xr_ok = true
-		print("[visionos-xr] visionOS XR interface initialized — use_xr + VRS_XR; origin current")
+		print("[visionos-xr] visionOS XR interface initialized — use_xr + VRS_XR; MSAA off; FXAA on")
 	else:
-		# Not on visionOS (or interface unavailable): flat camera so a desktop/headless run shows
-		# the swapped bust. Framed by _position_character() once the character is loaded.
 		push_warning("[visionos-xr] visionOS interface unavailable — desktop flat-camera fallback")
 		var cam := Camera3D.new()
 		cam.name = "FlatFallbackCamera"
@@ -78,13 +74,24 @@ func _init_visionos_xr() -> void:
 		cam.far = 100.0
 		cam.current = true
 		add_child(cam)
+		cam.position = Vector3(0, 1.4, 0)
 
 func _boot() -> void:
 	await get_tree().process_frame
 	_load_character()
-	# release.gd wires the custom GLSL ShaderMaterials synchronously in its _ready (during
-	# add_child). Convert them before the first rendered frame. Grooms attach to the head bone a
-	# few frames later, so run a second pass (same two-pass timing as vr.gd).
+	await _setup_loaded_character()
+	_apply_shadow()
+	_dump_meshes()
+	print("[visionos-xr] ready — char=%s scale=%.2f shadow=%s front=%.2f" % [_s_char, _s_scale, _s_shadow, _s_front])
+
+func _load_character() -> void:
+	var ps := load("res://scenes/release.tscn") as PackedScene
+	_rel = ps.instantiate() as Node3D
+	add_child(_rel)
+
+# Convert materials (2-pass, grooms attach a few frames late), strip look-dev UI/cameras, calm the
+# demo, place + scale + face the user, hide the studio backdrop. Used by both _boot and reload.
+func _setup_loaded_character() -> void:
 	_convert_materials()
 	await get_tree().process_frame
 	await get_tree().process_frame
@@ -93,21 +100,19 @@ func _boot() -> void:
 	_disable_release_cameras()
 	_quiet_demo()
 	_position_character()
-	_dump_meshes()
-	print("[visionos-xr] ready — release tool instanced, materials -> StandardMaterial3D, character placed")
+	_apply_scale()
+	_hide_studio_meshes()
 
-# Diagnostic: what meshes exist, are they skinned/blendshaped, where are they, how is the
-# material attached (override vs surface)? Under Godot's own renderer the skinned face/body/eyes
-# MUST now have real, head-height world AABBs (skinning applied) — NOT points at the origin (which
-# is the godotrealitykit bind-pose failure signature). Verify that before trusting any screenshot.
+# Diagnostic written to the app container (Godot stdout isn't captured on this fork). The full
+# skinned figure rendering is the real proof — get_aabb() returns pre-skin (collapsed) bounds for
+# GPU-skinned meshes, so AABB size is NOT a skinning indicator under Godot's own renderer.
 func _dump_meshes() -> void:
 	if _rel == null:
 		return
 	var lines: Array[String] = []
 	lines.append("=== MetaHuman visionOS XR diag — Godot's OWN renderer (CompositorServices) ===")
-	lines.append("xr_interface_ok=%s  materials_swapped=%d  character_pos=%s" % [_xr_ok, _swapped, str(_rel.position)])
-	lines.append("PASS = skin/face/body meshes have real, HEAD-HEIGHT world AABBs (skinning applied).")
-	lines.append("FAIL (godotrealitykit signature) = those meshes are point-sized AABBs at the origin.")
+	lines.append("char=%s scale=%.2f shadow=%s front=%.2f height=%.2f xr_ok=%s swapped=%d" \
+		% [_s_char, _s_scale, _s_shadow, _s_front, _s_height, _xr_ok, _swapped])
 	lines.append("")
 	for mi in _rel.find_children("*", "MeshInstance3D", true, false):
 		var m := mi as MeshInstance3D
@@ -135,32 +140,6 @@ func _dump_meshes() -> void:
 	if f:
 		f.store_string("\n".join(lines) + "\n")
 		f.close()
-		print("[visionos-xr] wrote ", lines.size(), " diag lines -> ", DIAG)
-
-# Liveness sample: confirms the game loop actually runs (≈90 fps under the compositor → frames
-# accumulate). Written to the app container so it survives the (uncaptured) stdout. Stops after a
-# handful of samples to keep the file bounded. Distinguishes "scene loaded + skinned but not
-# presenting" from "engine hung / not running".
-func _process(delta: float) -> void:
-	_frames += 1
-	if _samples >= 6:
-		return
-	_diag_t += delta
-	if _diag_t >= 3.0:
-		_diag_t = 0.0
-		_samples += 1
-		var f := FileAccess.open(FRAMES, FileAccess.READ_WRITE)
-		if f == null:
-			f = FileAccess.open(FRAMES, FileAccess.WRITE)
-		if f:
-			f.seek_end()
-			f.store_string("sample %d: frames=%d xr_ok=%s\n" % [_samples, _frames, _xr_ok])
-			f.close()
-
-func _load_character() -> void:
-	var ps := load("res://scenes/release.tscn") as PackedScene
-	_rel = ps.instantiate() as Node3D
-	add_child(_rel)
 
 # Walk every MeshInstance3D under the release tool and replace custom ShaderMaterials with
 # StandardMaterial3D (material_override AND per-surface). owned=false: release.gd's meshes are
@@ -268,7 +247,7 @@ func _coverage_to_alpha(tex: Texture2D, rgb: Color, red_is_coverage: bool) -> Te
 		return tex
 	if img.is_compressed():
 		img.decompress()
-	var cap := 768
+	var cap := 1024
 	if img.get_width() > cap:
 		img.resize(cap, cap, Image.INTERPOLATE_BILINEAR)
 	var w := img.get_width()
@@ -292,17 +271,30 @@ func _hide_release_ui() -> void:
 	for c in _rel.find_children("*", "Control", true):
 		(c as CanvasItem).visible = false
 
-# release.gd creates its own Camera3D with current=true (look-dev framing). In XR that camera
-# would compete with the XRCamera3D for the viewport — disable every camera under the release
-# tool so the XRCamera (or the desktop flat fallback) is the only active one.
+# release.gd creates its own Camera3D with current=true (look-dev framing) — disable every camera
+# under the release tool so the XRCamera (or the desktop flat fallback) is the only active one.
 func _disable_release_cameras() -> void:
 	if _rel == null:
 		return
 	for c in _rel.find_children("*", "Camera3D", true, false):
 		(c as Camera3D).current = false
 
-# Start a calm idle (face + body) but keep the per-frame hue-cycle lighting OFF (it re-renders
-# shadow maps every frame — needless cost, same call vr.gd makes on Android).
+# The release tool ships a studio backdrop cyc + floor plane (huge flat meshes). They don't belong
+# in immersive AR, and rotating the rig would swing the backdrop into view. Hide any oversized mesh
+# (skinned character meshes report a collapsed get_aabb() from GPU skinning; grooms are sub-metre).
+func _hide_studio_meshes() -> void:
+	if _rel == null:
+		return
+	var n := 0
+	for mi in _rel.find_children("*", "MeshInstance3D", true, false):
+		var m := mi as MeshInstance3D
+		var sz := (m.global_transform * m.get_aabb()).size
+		if maxf(sz.x, maxf(sz.y, sz.z)) > 4.0:
+			m.visible = false
+			n += 1
+	print("[visionos-xr] hid ", n, " oversized studio mesh(es) (backdrop/floor)")
+
+# Start a calm idle (face + body) but keep the per-frame hue-cycle lighting OFF.
 func _quiet_demo() -> void:
 	if _rel == null:
 		return
@@ -313,41 +305,120 @@ func _quiet_demo() -> void:
 	if _rel.has_method("_set_color_cycle"):
 		_rel.call("_set_color_cycle", false)
 
-# Place the character so its (skinned) head sits ~0.9 m in front of the user at a comfortable
-# eye line. Under Godot's OWN renderer the skeleton skins the meshes, so the head AABB is real
-# and head-height (unlike godotrealitykit, where the unskinned face collapsed to the origin).
-# In immersive XR the XROrigin3D is the floor and the XRCamera3D tracks the user's real head, so
-# we push the character back along -Z and lift it so the head lands ~1.5 m. Tunable via env:
-# MH_FRONT (forward distance, default 0.90) and MH_HEAD_Y (target head height, default 1.50).
+# Place the figure: feet on the floor (height, default 0), `front` metres ahead, facing the user.
 func _position_character() -> void:
 	if _rel == null:
 		return
-	var head := _character_head_y()
-	# Clamp out a stray backdrop/floor AABB (same guard vr.gd uses): fall back to a human head.
-	if head < 0.5 or head > 3.0:
-		head = 1.65
-	var front := 0.90
-	if OS.has_environment("MH_FRONT"):
-		front = float(OS.get_environment("MH_FRONT"))
-	var target_head_y := 1.50
-	if OS.has_environment("MH_HEAD_Y"):
-		target_head_y = float(OS.get_environment("MH_HEAD_Y"))
-	_rel.position = Vector3(0.0, target_head_y - head, -front)
-	print("[visionos-xr] character placed: local head_y=%.2f -> world head ~(0, %.2f, %.2f)" \
-		% [head, target_head_y, -front])
+	_rel.position = Vector3(0.0, _s_height, -_s_front)
+	_rel.rotation = Vector3(0.0, deg_to_rad(FACE_USER_YAW_DEG), 0.0)
+	print("[visionos-xr] placed: feet y=%.2f, front=%.2f m, yaw +%.0f°" % [_s_height, _s_front, FACE_USER_YAW_DEG])
 
-func _character_head_y() -> float:
+# Uniform scale about the figure's origin (feet) — grows/shrinks upward from the floor.
+func _apply_scale() -> void:
 	if _rel == null:
-		return 1.5
-	var aabb := AABB()
-	var first := true
-	for mi in _rel.find_children("*", "MeshInstance3D", true, false):
-		var v := mi as MeshInstance3D
-		if not v.visible:
-			continue
-		var b := v.global_transform * v.get_aabb()
-		aabb = b if first else aabb.merge(b)
-		first = false
-	if first:
-		return 1.5
-	return aabb.end.y - 0.18
+		return
+	_rel.scale = Vector3(_s_scale, _s_scale, _s_scale)
+
+# Directional shadow: OFF, or HIGH (crisp self-shadowing — 4096 map via project.godot + tuned bias,
+# a single orthogonal split tight on the figure so it isn't blocky).
+func _apply_shadow() -> void:
+	var dl := get_node_or_null("DirectionalLight3D") as DirectionalLight3D
+	if dl == null:
+		return
+	if _s_shadow == "high":
+		dl.shadow_enabled = true
+		dl.shadow_bias = 0.03
+		dl.shadow_normal_bias = 1.2
+		dl.shadow_blur = 1.0
+		dl.directional_shadow_mode = DirectionalLight3D.SHADOW_ORTHOGONAL
+		dl.directional_shadow_max_distance = 6.0
+	else:
+		dl.shadow_enabled = false
+
+# --- live settings ------------------------------------------------------------
+# Read user://mh_settings.cfg into _s_*. Returns true if any value changed since last read.
+func _load_settings() -> bool:
+	var cfg := ConfigFile.new()
+	if cfg.load(SETTINGS) != OK:
+		return false   # no file yet → keep defaults
+	var c := str(cfg.get_value("mh", "character", _s_char))
+	var sc := float(cfg.get_value("mh", "scale", _s_scale))
+	var sh := str(cfg.get_value("mh", "shadow", _s_shadow))
+	var fr := float(cfg.get_value("mh", "front", _s_front))
+	var hi := float(cfg.get_value("mh", "height", _s_height))
+	sc = clampf(sc, 0.2, 4.0)
+	fr = clampf(fr, 0.3, 5.0)
+	var changed := (c != _s_char) or (not is_equal_approx(sc, _s_scale)) or (sh != _s_shadow) \
+		or (not is_equal_approx(fr, _s_front)) or (not is_equal_approx(hi, _s_height))
+	_s_char = c
+	_s_scale = sc
+	_s_shadow = sh
+	_s_front = fr
+	_s_height = hi
+	return changed
+
+# Persist current settings (so the in-world panel and external writers share one source of truth).
+func _save_settings() -> void:
+	var cfg := ConfigFile.new()
+	cfg.set_value("mh", "character", _s_char)
+	cfg.set_value("mh", "scale", _s_scale)
+	cfg.set_value("mh", "shadow", _s_shadow)
+	cfg.set_value("mh", "front", _s_front)
+	cfg.set_value("mh", "height", _s_height)
+	cfg.save(SETTINGS)
+
+# Poll the cfg; apply diffs live. Character change → full reload (cheap re-instance); the rest are
+# cheap in-place updates.
+func _poll_settings() -> void:
+	if _busy:
+		return
+	var prev_char := _s_char
+	if not _load_settings():
+		return
+	if _s_char != prev_char:
+		_reload_character()
+	else:
+		_position_character()
+		_apply_scale()
+		_apply_shadow()
+		_dump_meshes()
+
+# Swap guy↔gal by re-instancing the release tool with the new RELEASE_CHAR (bulletproof — reuses the
+# whole boot path: convert/position/scale/hide). Costs a GLB reload (~1-2 s) but never half-applies.
+func _reload_character() -> void:
+	if _busy:
+		return
+	_busy = true
+	print("[visionos-xr] reloading character -> ", _s_char)
+	if _rel:
+		_rel.queue_free()
+		_rel = null
+		await get_tree().process_frame
+	OS.set_environment("RELEASE_CHAR", _s_char)
+	_swapped = 0
+	_load_character()
+	await _setup_loaded_character()
+	_apply_shadow()
+	_dump_meshes()
+	_busy = false
+
+func _process(delta: float) -> void:
+	_frames += 1
+	# settings poll
+	_poll_t += delta
+	if _poll_t >= POLL_DT:
+		_poll_t = 0.0
+		_poll_settings()
+	# liveness samples (first few only, to keep the file bounded)
+	if _samples < 6:
+		_diag_t += delta
+		if _diag_t >= 3.0:
+			_diag_t = 0.0
+			_samples += 1
+			var f := FileAccess.open(FRAMES, FileAccess.READ_WRITE)
+			if f == null:
+				f = FileAccess.open(FRAMES, FileAccess.WRITE)
+			if f:
+				f.seek_end()
+				f.store_string("sample %d: frames=%d char=%s xr_ok=%s\n" % [_samples, _frames, _s_char, _xr_ok])
+				f.close()
