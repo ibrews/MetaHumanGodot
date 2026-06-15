@@ -41,6 +41,22 @@ var _diag_t := 0.0
 var _poll_t := 0.0
 var _busy := false                 # guards against overlapping reloads
 
+# --- in-world gaze-dwell control panel (head-only; no hand tracking needed) ----
+const BTN_W := 0.27
+const BTN_H := 0.085
+const BTN_GAP := 0.022
+const DWELL_SEC := 1.1
+const GAZE_LAYER := 2
+const BTN_IDLE := Color(0.10, 0.13, 0.18, 0.85)
+const BTN_HOT := Color(0.10, 0.78, 0.98, 0.96)
+var _panel: Node3D
+var _cam: XRCamera3D
+var _buttons: Array = []
+var _cooldown := 0.0
+var _s_px := -0.42                 # control-panel position (world; cfg keys panel_x/y/z) — lower-left,
+var _s_py := 1.05                  # out of the forward gaze so it won't auto-trigger when you look
+var _s_pz := -0.60                 # at the figure; glance down-left to use it
+
 func _ready() -> void:
 	_load_settings()                       # read cfg → _s_* before instancing so the right char boots
 	OS.set_environment("RELEASE_CHAR", _s_char)
@@ -81,6 +97,7 @@ func _boot() -> void:
 	_load_character()
 	await _setup_loaded_character()
 	_apply_shadow()
+	_build_panel()
 	_dump_meshes()
 	print("[visionos-xr] ready — char=%s scale=%.2f shadow=%s front=%.2f" % [_s_char, _s_scale, _s_shadow, _s_front])
 
@@ -335,6 +352,126 @@ func _apply_shadow() -> void:
 	else:
 		dl.shadow_enabled = false
 
+# --- UI actions (also persist to the cfg so panel + external writers share one source) --------
+func ui_toggle_char() -> void:
+	_s_char = "her" if _s_char == "guy" else "guy"
+	_save_settings()
+	_reload_character()
+
+func ui_bump_scale(d: float) -> void:
+	_s_scale = clampf(_s_scale + d, 0.3, 3.0)
+	_save_settings()
+	_apply_scale()
+
+func ui_toggle_shadow() -> void:
+	_s_shadow = "off" if _s_shadow == "high" else "high"
+	_save_settings()
+	_apply_shadow()
+
+func _activate(action: String) -> void:
+	var f := FileAccess.open(FRAMES, FileAccess.READ_WRITE)
+	if f == null:
+		f = FileAccess.open(FRAMES, FileAccess.WRITE)
+	if f:
+		f.seek_end()
+		f.store_string("activated: %s\n" % action)
+		f.close()
+	match action:
+		"char": ui_toggle_char()
+		"up": ui_bump_scale(0.15)
+		"down": ui_bump_scale(-0.15)
+		"shadow": ui_toggle_shadow()
+
+# Floating gaze-dwell control panel: look at a button for DWELL_SEC and it fires (a filling
+# cyan tint shows progress). Head-only — works on device with no hand tracking, and renders in the
+# sim. The figure-facing quads sit to the lower-left so they don't occlude the figure.
+func _build_panel() -> void:
+	_cam = get_node_or_null("XROrigin3D/XRCamera3D") as XRCamera3D
+	if _panel:
+		_panel.queue_free()
+	_buttons.clear()
+	_panel = Node3D.new()
+	_panel.name = "ControlPanel"
+	add_child(_panel)
+	_panel.position = Vector3(_s_px, _s_py, _s_pz)
+	var defs := [["GUY / GAL", "char"], ["BIGGER", "up"], ["SMALLER", "down"], ["SHADOW", "shadow"]]
+	var plate := MeshInstance3D.new()
+	var pm := QuadMesh.new()
+	pm.size = Vector2(BTN_W + 0.05, (BTN_H + BTN_GAP) * defs.size() + 0.05)
+	plate.mesh = pm
+	var pmat := StandardMaterial3D.new()
+	pmat.albedo_color = Color(0.02, 0.03, 0.05, 0.5)
+	pmat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	pmat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	plate.material_override = pmat
+	plate.position = Vector3(0, 0, -0.01)
+	_panel.add_child(plate)
+	var y := (defs.size() - 1) * (BTN_H + BTN_GAP) * 0.5
+	for d in defs:
+		_buttons.append(_make_button(d[0], d[1], Vector3(0.0, y, 0.0)))
+		y -= (BTN_H + BTN_GAP)
+
+func _make_button(text: String, action: String, local_pos: Vector3) -> Dictionary:
+	var area := Area3D.new()
+	area.collision_layer = GAZE_LAYER
+	area.collision_mask = 0
+	area.position = local_pos
+	var cs := CollisionShape3D.new()
+	var box := BoxShape3D.new()
+	box.size = Vector3(BTN_W, BTN_H, 0.04)
+	cs.shape = box
+	area.add_child(cs)
+	var quad := MeshInstance3D.new()
+	var qm := QuadMesh.new()
+	qm.size = Vector2(BTN_W, BTN_H)
+	quad.mesh = qm
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = BTN_IDLE
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	quad.material_override = mat
+	area.add_child(quad)
+	var lbl := Label3D.new()
+	lbl.text = text
+	lbl.font_size = 64
+	lbl.pixel_size = 0.0011
+	lbl.modulate = Color.WHITE
+	lbl.outline_size = 10
+	lbl.position = Vector3(0, 0, 0.02)
+	area.add_child(lbl)
+	_panel.add_child(area)
+	return {"area": area, "mat": mat, "action": action, "dwell": 0.0}
+
+# Gaze raycast from the XRCamera; dwell on a button to fire it.
+func _update_gaze(delta: float) -> void:
+	if _panel == null or _cam == null or _buttons.is_empty() or _busy:
+		return
+	if _cooldown > 0.0:
+		_cooldown -= delta
+	var from := _cam.global_position
+	var to := from - _cam.global_transform.basis.z * 3.0
+	var q := PhysicsRayQueryParameters3D.create(from, to)
+	q.collide_with_areas = true
+	q.collide_with_bodies = false
+	q.collision_mask = GAZE_LAYER
+	var hit := get_world_3d().direct_space_state.intersect_ray(q)
+	var focused = hit.get("collider") if hit else null
+	for b in _buttons:
+		var mat: StandardMaterial3D = b["mat"]
+		if b["area"] == focused and _cooldown <= 0.0:
+			b["dwell"] = float(b["dwell"]) + delta
+			if b["dwell"] >= DWELL_SEC:
+				b["dwell"] = 0.0
+				_cooldown = 0.7
+				mat.albedo_color = BTN_IDLE
+				_activate(b["action"])
+				return
+		else:
+			# Decay slower than it builds so head micro-jitter (a 1-frame ray miss) doesn't reset
+			# progress — a steady gaze still completes; a glance-away still cancels.
+			b["dwell"] = maxf(0.0, float(b["dwell"]) - delta * 0.7)
+		mat.albedo_color = BTN_IDLE.lerp(BTN_HOT, clampf(float(b["dwell"]) / DWELL_SEC, 0.0, 1.0))
+
 # --- live settings ------------------------------------------------------------
 # Read user://mh_settings.cfg into _s_*. Returns true if any value changed since last read.
 func _load_settings() -> bool:
@@ -346,15 +483,22 @@ func _load_settings() -> bool:
 	var sh := str(cfg.get_value("mh", "shadow", _s_shadow))
 	var fr := float(cfg.get_value("mh", "front", _s_front))
 	var hi := float(cfg.get_value("mh", "height", _s_height))
+	var px := float(cfg.get_value("mh", "panel_x", _s_px))
+	var py := float(cfg.get_value("mh", "panel_y", _s_py))
+	var pz := float(cfg.get_value("mh", "panel_z", _s_pz))
 	sc = clampf(sc, 0.2, 4.0)
 	fr = clampf(fr, 0.3, 5.0)
 	var changed := (c != _s_char) or (not is_equal_approx(sc, _s_scale)) or (sh != _s_shadow) \
-		or (not is_equal_approx(fr, _s_front)) or (not is_equal_approx(hi, _s_height))
+		or (not is_equal_approx(fr, _s_front)) or (not is_equal_approx(hi, _s_height)) \
+		or (not is_equal_approx(px, _s_px)) or (not is_equal_approx(py, _s_py)) or (not is_equal_approx(pz, _s_pz))
 	_s_char = c
 	_s_scale = sc
 	_s_shadow = sh
 	_s_front = fr
 	_s_height = hi
+	_s_px = px
+	_s_py = py
+	_s_pz = pz
 	return changed
 
 # Persist current settings (so the in-world panel and external writers share one source of truth).
@@ -365,6 +509,9 @@ func _save_settings() -> void:
 	cfg.set_value("mh", "shadow", _s_shadow)
 	cfg.set_value("mh", "front", _s_front)
 	cfg.set_value("mh", "height", _s_height)
+	cfg.set_value("mh", "panel_x", _s_px)
+	cfg.set_value("mh", "panel_y", _s_py)
+	cfg.set_value("mh", "panel_z", _s_pz)
 	cfg.save(SETTINGS)
 
 # Poll the cfg; apply diffs live. Character change → full reload (cheap re-instance); the rest are
@@ -381,6 +528,8 @@ func _poll_settings() -> void:
 		_position_character()
 		_apply_scale()
 		_apply_shadow()
+		if _panel:
+			_panel.position = Vector3(_s_px, _s_py, _s_pz)
 		_dump_meshes()
 
 # Swap guy↔gal by re-instancing the release tool with the new RELEASE_CHAR (bulletproof — reuses the
@@ -404,6 +553,7 @@ func _reload_character() -> void:
 
 func _process(delta: float) -> void:
 	_frames += 1
+	_update_gaze(delta)
 	# settings poll
 	_poll_t += delta
 	if _poll_t >= POLL_DT:
