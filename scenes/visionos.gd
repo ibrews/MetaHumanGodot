@@ -123,6 +123,19 @@ func _setup_loaded_character() -> void:
 	_apply_scale()
 	_position_character()
 	_hide_studio_meshes()
+	_tame_hair_backing()
+
+# The head hair ships as TWO coincident surfaces — the visible cards (bone-attached, skin=false) and
+# a "_Backing" fill (skin=true). Driven by different transforms, they micro-slide against each other
+# as the head moves → z-fighting flicker (the beard/mustache have no backing, so they're clean).
+# Hide the backing; the cards are the actual hair.
+func _tame_hair_backing() -> void:
+	if _rel == null:
+		return
+	for mi in _rel.find_children("*", "MeshInstance3D", true, false):
+		var m := mi as MeshInstance3D
+		if String(m.name).contains("Backing"):
+			m.visible = false
 
 # Diagnostic written to the app container (Godot stdout isn't captured on this fork). The full
 # skinned figure rendering is the real proof — get_aabb() returns pre-skin (collapsed) bounds for
@@ -581,6 +594,7 @@ func _poll_settings() -> void:
 	# Enforce every poll: release.gd re-creates its rig's shadows, so keep ALL shadows off (or our one
 	# directional on). Keep the panel at the viewer's eye height so it survives a recenter.
 	_apply_shadow()
+	_tame_hair_backing()   # enforce (release.gd re-asserts groom visibility on some events)
 	if _panel and _cam:
 		_panel.position = Vector3(_s_px, _cam.global_position.y + _s_py, _s_pz)
 	# Re-match the figure's eye height if the head shifted a lot (a recenter), not on micro-movement.
