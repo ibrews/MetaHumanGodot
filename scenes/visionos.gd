@@ -27,9 +27,11 @@ const POLL_DT := 0.5               # how often to re-read the settings cfg (seco
 # --- applied settings (mirror of the cfg; defaults) ---------------------------
 var _s_char := "guy"               # "guy" | "her"
 var _s_scale := 1.0                # uniform scale of the figure
-var _s_shadow := "high"            # "off" | "high"
+var _s_shadow := "off"             # "off" | "high" — default OFF; toggle to crisp hi-res self-shadow
 var _s_front := 0.9                # metres in front of the user
-var _s_height := 0.0               # feet Y (0 = on the floor)
+var _s_height := 0.0               # manual eye-height nudge (m); 0 = eyes level with the viewer
+# (The LOOK-preset experiment was removed: post-contrast/AgX rendered fine in the sim but produced
+# color artifacts on-device. The plain look-dev WorldEnvironment in visionos.tscn is the keeper.)
 
 # --- state --------------------------------------------------------------------
 var _rel: Node3D
@@ -40,6 +42,24 @@ var _samples := 0
 var _diag_t := 0.0
 var _poll_t := 0.0
 var _busy := false                 # guards against overlapping reloads
+
+# --- in-world gaze-dwell control panel (head-only; no hand tracking needed) ----
+const BTN_W := 0.27
+const BTN_H := 0.085
+const BTN_GAP := 0.022
+const DWELL_SEC := 1.1
+const GAZE_LAYER := 2
+const TOUCH_ENABLED := true        # poke-to-press (hand tracking, additive to gaze-dwell). Re-enabled in the
+                                   # device-validated re-add; harmless when no hand-tracking data (early-returns).
+const BTN_IDLE := Color(0.10, 0.13, 0.18, 0.85)
+const BTN_HOT := Color(0.10, 0.78, 0.98, 0.96)
+var _panel: Node3D
+var _cam: XRCamera3D
+var _buttons: Array = []
+var _cooldown := 0.0
+var _s_px := -0.42                 # control-panel X (cfg panel_x): to the left, out of forward gaze
+var _s_py := 0.0                   # control-panel Y OFFSET from the viewer's eye height (cfg panel_y)
+var _s_pz := -0.60                 # control-panel Z (cfg panel_z): in front; its MIDDLE sits at eye level
 
 func _ready() -> void:
 	_load_settings()                       # read cfg → _s_* before instancing so the right char boots
@@ -64,6 +84,11 @@ func _init_visionos_xr() -> void:
 		var origin := get_node_or_null("XROrigin3D") as XROrigin3D
 		if origin:
 			origin.current = true
+		_cam = get_node_or_null("XROrigin3D/XRCamera3D") as XRCamera3D
+		# NOTE: XRServer has NO `pose_recentered` signal in this fork's editor/runtime — referencing it
+		# was a PARSE ERROR that failed the WHOLE script to load → no _ready → device "passthrough
+		# purgatory" (the real multi-round root cause). Crown-recenter auto-reanchor is dropped; the
+		# figure still anchors on boot via _position_character(). (_on_recenter stays defined/unused.)
 		_xr_ok = true
 		print("[visionos-xr] visionOS XR interface initialized — use_xr + VRS_XR; MSAA off; FXAA on")
 	else:
@@ -81,6 +106,7 @@ func _boot() -> void:
 	_load_character()
 	await _setup_loaded_character()
 	_apply_shadow()
+	_build_panel()
 	_dump_meshes()
 	print("[visionos-xr] ready — char=%s scale=%.2f shadow=%s front=%.2f" % [_s_char, _s_scale, _s_shadow, _s_front])
 
@@ -99,9 +125,22 @@ func _setup_loaded_character() -> void:
 	_hide_release_ui()
 	_disable_release_cameras()
 	_quiet_demo()
-	_position_character()
 	_apply_scale()
+	_position_character()
 	_hide_studio_meshes()
+	_tame_hair_backing()
+
+# The head hair ships as TWO coincident surfaces — the visible cards (bone-attached, skin=false) and
+# a "_Backing" fill (skin=true). Driven by different transforms, they micro-slide against each other
+# as the head moves → z-fighting flicker (the beard/mustache have no backing, so they're clean).
+# Hide the backing; the cards are the actual hair.
+func _tame_hair_backing() -> void:
+	if _rel == null:
+		return
+	for mi in _rel.find_children("*", "MeshInstance3D", true, false):
+		var m := mi as MeshInstance3D
+		if String(m.name).contains("Backing"):
+			m.visible = false
 
 # Diagnostic written to the app container (Godot stdout isn't captured on this fork). The full
 # skinned figure rendering is the real proof — get_aabb() returns pre-skin (collapsed) bounds for
@@ -197,8 +236,11 @@ func _to_standard(sm: ShaderMaterial) -> StandardMaterial3D:
 		st.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
 		st.alpha_scissor_threshold = 0.18
 		st.cull_mode = BaseMaterial3D.CULL_DISABLED
-		st.roughness = 0.9
-		st.metallic_specular = 0.1
+		# Matte hair: specular highlights on the thin hair cards alias into a flickering light/dark
+		# shimmer as the head moves (no MSAA to damp it). Disable specular entirely + full roughness.
+		st.roughness = 1.0
+		st.metallic_specular = 0.0
+		st.specular_mode = BaseMaterial3D.SPECULAR_DISABLED
 		st.emission_enabled = true
 		st.emission = hc * 0.06
 		var cov = sm.get_shader_parameter("coverage_atlas")
@@ -309,9 +351,56 @@ func _quiet_demo() -> void:
 func _position_character() -> void:
 	if _rel == null:
 		return
-	_rel.position = Vector3(0.0, _s_height, -_s_front)
+	_rel.position.x = 0.0
+	_rel.position.z = -_s_front
 	_rel.rotation = Vector3(0.0, deg_to_rad(FACE_USER_YAW_DEG), 0.0)
-	print("[visionos-xr] placed: feet y=%.2f, front=%.2f m, yaw +%.0f°" % [_s_height, _s_front, FACE_USER_YAW_DEG])
+	_match_eye_height()
+	print("[visionos-xr] placed: eye-matched y=%.2f, front=%.2f m, scale=%.2f, yaw +%.0f°" \
+		% [_rel.position.y, _s_front, _s_scale, FACE_USER_YAW_DEG])
+
+# Sit the figure so its eyes are at the VIEWER's eye height (XRCamera Y) — feet then fall naturally
+# on the floor, at any scale (the user asked to match eyes, not feet). This is robust to the root-
+# pivot ambiguity that left the feet underground when placing the root at y=0. _s_height is a manual
+# nudge on top (0 = level with the viewer).
+func _match_eye_height() -> void:
+	if _rel == null:
+		return
+	if _cam == null:
+		_rel.position.y = _s_height   # desktop / no-XR fallback
+		return
+	var eye := _character_eye_y()
+	# eye_y is linear in _rel.position.y, so this moves the eyes exactly onto the target.
+	_rel.position.y += (_cam.global_position.y + _s_height) - eye
+
+# Crown-recenter (the user holds the Digital Crown → XRServer.pose_recentered): re-anchor the figure
+# + panel to the new eye height. This and boot are the ONLY times we re-anchor — never on normal head
+# motion (which was causing the constant drift).
+func _on_recenter() -> void:
+	_position_character()
+	if _panel and _cam:
+		_panel.position = Vector3(_s_px, _cam.global_position.y + _s_py, _s_pz)
+
+# World Y of the character's eyes, estimated from the head grooms (hair/brows/beard — real AABBs).
+# The skinned face/body report a COLLAPSED get_aabb() (GPU skinning) so they're skipped; the studio
+# backdrop/floor is hidden / oversized so it's skipped too.
+func _character_eye_y() -> float:
+	if _rel == null:
+		return 1.5
+	var aabb := AABB()
+	var first := true
+	for mi in _rel.find_children("*", "MeshInstance3D", true, false):
+		var m := mi as MeshInstance3D
+		if not m.visible:
+			continue
+		var b := m.global_transform * m.get_aabb()
+		var mx := maxf(b.size.x, maxf(b.size.y, b.size.z))
+		if mx < 0.03 or mx > 4.0:   # skip collapsed skinned meshes and oversized studio geo
+			continue
+		aabb = b if first else aabb.merge(b)
+		first = false
+	if first:
+		return _rel.global_position.y + 1.5
+	return aabb.end.y - 0.12   # crown of the grooms minus ~12 cm ≈ eye line
 
 # Uniform scale about the figure's origin (feet) — grows/shrinks upward from the floor.
 func _apply_scale() -> void:
@@ -322,18 +411,172 @@ func _apply_scale() -> void:
 # Directional shadow: OFF, or HIGH (crisp self-shadowing — 4096 map via project.godot + tuned bias,
 # a single orthogonal split tight on the figure so it isn't blocky).
 func _apply_shadow() -> void:
+	# release.gd builds its OWN rig — key/fill/rim SpotLights + a "HairRake" spot, several with
+	# shadow_enabled. THOSE (blocky, low positional-shadow filter) were the "other shadow" the toggle
+	# never touched. Force EVERY light's shadow off first, so OFF really is off.
+	for n in find_children("*", "Light3D", true, false):
+		(n as Light3D).shadow_enabled = false
+	# Our single directional is the toggle: OFF, or one crisp hi-res self-shadow.
 	var dl := get_node_or_null("DirectionalLight3D") as DirectionalLight3D
-	if dl == null:
-		return
-	if _s_shadow == "high":
+	if dl and _s_shadow == "high":
 		dl.shadow_enabled = true
-		dl.shadow_bias = 0.03
-		dl.shadow_normal_bias = 1.2
-		dl.shadow_blur = 1.0
+		dl.shadow_bias = 0.04
+		dl.shadow_normal_bias = 2.0
+		dl.shadow_blur = 1.5
 		dl.directional_shadow_mode = DirectionalLight3D.SHADOW_ORTHOGONAL
-		dl.directional_shadow_max_distance = 6.0
-	else:
-		dl.shadow_enabled = false
+		dl.directional_shadow_max_distance = 2.5   # tight on the figure → high texel density (crisp)
+
+# --- UI actions (also persist to the cfg so panel + external writers share one source) --------
+func ui_toggle_char() -> void:
+	_s_char = "her" if _s_char == "guy" else "guy"
+	_save_settings()
+	_reload_character()
+
+func ui_bump_scale(d: float) -> void:
+	_s_scale = clampf(_s_scale + d, 0.3, 3.0)
+	_save_settings()
+	_apply_scale()
+	_position_character()   # re-match eye height at the new scale (so the feet stay grounded)
+
+func ui_toggle_shadow() -> void:
+	_s_shadow = "off" if _s_shadow == "high" else "high"
+	_save_settings()
+	_apply_shadow()
+
+func _activate(action: String) -> void:
+	var f := FileAccess.open(FRAMES, FileAccess.READ_WRITE)
+	if f == null:
+		f = FileAccess.open(FRAMES, FileAccess.WRITE)
+	if f:
+		f.seek_end()
+		f.store_string("activated: %s\n" % action)
+		f.close()
+	match action:
+		"char": ui_toggle_char()
+		"up": ui_bump_scale(0.15)
+		"down": ui_bump_scale(-0.15)
+		"shadow": ui_toggle_shadow()
+
+# Floating gaze-dwell control panel: look at a button for DWELL_SEC and it fires (a filling
+# cyan tint shows progress). Head-only — works on device with no hand tracking, and renders in the
+# sim. The figure-facing quads sit to the lower-left so they don't occlude the figure.
+func _build_panel() -> void:
+	_cam = get_node_or_null("XROrigin3D/XRCamera3D") as XRCamera3D
+	if _panel:
+		_panel.queue_free()
+	_buttons.clear()
+	_panel = Node3D.new()
+	_panel.name = "ControlPanel"
+	add_child(_panel)
+	# Panel MIDDLE at the viewer's eye height (cam Y) + the cfg Y offset — so it survives a recenter.
+	_panel.position = Vector3(_s_px, (_cam.global_position.y if _cam else 1.5) + _s_py, _s_pz)
+	var defs := [["GUY / GAL", "char"], ["BIGGER", "up"], ["SMALLER", "down"], ["SHADOW", "shadow"]]
+	var plate := MeshInstance3D.new()
+	var pm := QuadMesh.new()
+	pm.size = Vector2(BTN_W + 0.05, (BTN_H + BTN_GAP) * defs.size() + 0.05)
+	plate.mesh = pm
+	var pmat := StandardMaterial3D.new()
+	pmat.albedo_color = Color(0.02, 0.03, 0.05, 0.5)
+	pmat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	pmat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	plate.material_override = pmat
+	plate.position = Vector3(0, 0, -0.01)
+	_panel.add_child(plate)
+	var y := (defs.size() - 1) * (BTN_H + BTN_GAP) * 0.5
+	for d in defs:
+		_buttons.append(_make_button(d[0], d[1], Vector3(0.0, y, 0.0)))
+		y -= (BTN_H + BTN_GAP)
+
+func _make_button(text: String, action: String, local_pos: Vector3) -> Dictionary:
+	var area := Area3D.new()
+	area.collision_layer = GAZE_LAYER
+	area.collision_mask = 0
+	area.position = local_pos
+	var cs := CollisionShape3D.new()
+	var box := BoxShape3D.new()
+	box.size = Vector3(BTN_W, BTN_H, 0.04)
+	cs.shape = box
+	area.add_child(cs)
+	var quad := MeshInstance3D.new()
+	var qm := QuadMesh.new()
+	qm.size = Vector2(BTN_W, BTN_H)
+	quad.mesh = qm
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = BTN_IDLE
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	quad.material_override = mat
+	area.add_child(quad)
+	var lbl := Label3D.new()
+	lbl.text = text
+	lbl.font_size = 64
+	lbl.pixel_size = 0.0011
+	lbl.modulate = Color.WHITE
+	lbl.outline_size = 10
+	lbl.position = Vector3(0, 0, 0.02)
+	area.add_child(lbl)
+	_panel.add_child(area)
+	return {"area": area, "mat": mat, "action": action, "dwell": 0.0}
+
+# Gaze raycast from the XRCamera; dwell on a button to fire it.
+func _update_gaze(delta: float) -> void:
+	if _panel == null or _cam == null or _buttons.is_empty() or _busy:
+		return
+	if _cooldown > 0.0:
+		_cooldown -= delta
+	# Direct touch (poke): a fingertip inside a button's face fires it instantly. Additive to the
+	# gaze-dwell — active only when hand tracking has data (otherwise gaze alone still works).
+	if TOUCH_ENABLED and _cooldown <= 0.0:
+		for side in ["left_hand", "right_hand"]:
+			var tip = _index_tip_world(side)
+			if tip == null:
+				continue
+			var lp: Vector3 = _panel.to_local(tip)
+			for b in _buttons:
+				var bp: Vector3 = (b["area"] as Area3D).position
+				if absf(lp.x - bp.x) < BTN_W * 0.5 and absf(lp.y - bp.y) < BTN_H * 0.5 and absf(lp.z - bp.z) < 0.04:
+					_cooldown = 0.7
+					(b["mat"] as StandardMaterial3D).albedo_color = BTN_HOT
+					_activate(b["action"])
+					return
+	var from := _cam.global_position
+	var to := from - _cam.global_transform.basis.z * 3.0
+	var q := PhysicsRayQueryParameters3D.create(from, to)
+	q.collide_with_areas = true
+	q.collide_with_bodies = false
+	q.collision_mask = GAZE_LAYER
+	var hit := get_world_3d().direct_space_state.intersect_ray(q)
+	var focused = hit.get("collider") if hit else null
+	for b in _buttons:
+		var mat: StandardMaterial3D = b["mat"]
+		if b["area"] == focused and _cooldown <= 0.0:
+			b["dwell"] = float(b["dwell"]) + delta
+			if b["dwell"] >= DWELL_SEC:
+				b["dwell"] = 0.0
+				_cooldown = 0.7
+				mat.albedo_color = BTN_IDLE
+				_activate(b["action"])
+				return
+		else:
+			# Decay slower than it builds so head micro-jitter (a 1-frame ray miss) doesn't reset
+			# progress — a steady gaze still completes; a glance-away still cancels.
+			b["dwell"] = maxf(0.0, float(b["dwell"]) - delta * 0.7)
+		mat.albedo_color = BTN_IDLE.lerp(BTN_HOT, clampf(float(b["dwell"]) / DWELL_SEC, 0.0, 1.0))
+
+# Index fingertip in WORLD space (tracking-space joint through XROrigin) — for "poke" touch input.
+# Lifted from Cascade's _index_tip_world. Returns null when hand tracking has no data.
+func _index_tip_world(side: String):
+	var tname := "/user/hand_tracker/" + ("left" if side == "left_hand" else "right")
+	var ht := XRServer.get_tracker(tname) as XRHandTracker
+	if ht == null or not ht.get_has_tracking_data():
+		return null
+	var idx := XRHandTracker.HAND_JOINT_INDEX_FINGER_TIP
+	if not (int(ht.get_hand_joint_flags(idx)) & 8):   # HAND_JOINT_FLAG_POSITION_TRACKED
+		return null
+	var origin := get_node_or_null("XROrigin3D") as Node3D
+	if origin == null:
+		return null
+	return origin.global_transform * ht.get_hand_joint_transform(idx).origin
 
 # --- live settings ------------------------------------------------------------
 # Read user://mh_settings.cfg into _s_*. Returns true if any value changed since last read.
@@ -346,15 +589,22 @@ func _load_settings() -> bool:
 	var sh := str(cfg.get_value("mh", "shadow", _s_shadow))
 	var fr := float(cfg.get_value("mh", "front", _s_front))
 	var hi := float(cfg.get_value("mh", "height", _s_height))
+	var px := float(cfg.get_value("mh", "panel_x", _s_px))
+	var py := float(cfg.get_value("mh", "panel_y", _s_py))
+	var pz := float(cfg.get_value("mh", "panel_z", _s_pz))
 	sc = clampf(sc, 0.2, 4.0)
 	fr = clampf(fr, 0.3, 5.0)
 	var changed := (c != _s_char) or (not is_equal_approx(sc, _s_scale)) or (sh != _s_shadow) \
-		or (not is_equal_approx(fr, _s_front)) or (not is_equal_approx(hi, _s_height))
+		or (not is_equal_approx(fr, _s_front)) or (not is_equal_approx(hi, _s_height)) \
+		or (not is_equal_approx(px, _s_px)) or (not is_equal_approx(py, _s_py)) or (not is_equal_approx(pz, _s_pz))
 	_s_char = c
 	_s_scale = sc
 	_s_shadow = sh
 	_s_front = fr
 	_s_height = hi
+	_s_px = px
+	_s_py = py
+	_s_pz = pz
 	return changed
 
 # Persist current settings (so the in-world panel and external writers share one source of truth).
@@ -365,6 +615,9 @@ func _save_settings() -> void:
 	cfg.set_value("mh", "shadow", _s_shadow)
 	cfg.set_value("mh", "front", _s_front)
 	cfg.set_value("mh", "height", _s_height)
+	cfg.set_value("mh", "panel_x", _s_px)
+	cfg.set_value("mh", "panel_y", _s_py)
+	cfg.set_value("mh", "panel_z", _s_pz)
 	cfg.save(SETTINGS)
 
 # Poll the cfg; apply diffs live. Character change → full reload (cheap re-instance); the rest are
@@ -373,15 +626,20 @@ func _poll_settings() -> void:
 	if _busy:
 		return
 	var prev_char := _s_char
-	if not _load_settings():
-		return
-	if _s_char != prev_char:
+	var changed := _load_settings()
+	if changed and _s_char != prev_char:
 		_reload_character()
-	else:
-		_position_character()
+		return
+	if changed:
 		_apply_scale()
-		_apply_shadow()
+		_position_character()
 		_dump_meshes()
+	# Enforce every poll: release.gd re-creates its rig's shadows + re-asserts groom visibility, so
+	# keep shadows off (or our one directional) and the hair backing hidden. Eye-height anchoring is
+	# NOT done here — only on boot + crown-recenter (see _on_recenter) — so the figure and panel don't
+	# drift with normal head motion.
+	_apply_shadow()
+	_tame_hair_backing()
 
 # Swap guy↔gal by re-instancing the release tool with the new RELEASE_CHAR (bulletproof — reuses the
 # whole boot path: convert/position/scale/hide). Costs a GLB reload (~1-2 s) but never half-applies.
@@ -404,6 +662,7 @@ func _reload_character() -> void:
 
 func _process(delta: float) -> void:
 	_frames += 1
+	_update_gaze(delta)
 	# settings poll
 	_poll_t += delta
 	if _poll_t >= POLL_DT:

@@ -64,7 +64,7 @@ environment/defaults/default_clear_color=Color(0.015, 0.017, 0.022, 1)
 ; visionOS: ample GPU headroom on AVP — high-res directional shadow so it isn't blocky when ON.
 ; The harness toggles the directional light's shadow_enabled (OFF / HIGH) at runtime per settings.
 lights_and_shadows/directional_shadow/size=4096
-lights_and_shadows/directional_shadow/soft_shadow_filter_quality=3
+lights_and_shadows/directional_shadow/soft_shadow_filter_quality=4
 lights_and_shadows/positional_shadow/soft_shadow_filter_quality=1
 
 [xr]
