@@ -63,7 +63,18 @@ func set_shown(shown: bool) -> void:
 	if shown == _shown:
 		return
 	_shown = shown
+	_apply_cast_shadow()
 	_burst(Color(0.4, 0.9, 1.0) if shown else Color(0.85, 0.92, 1.0))
+
+# "Shown" = mesh renders + casts shadow (ON). "Hidden" = SHADOWS_ONLY — invisible mesh that STILL
+# casts a shadow; combined with the tracking kept alive in _process, the REAL passthrough hands get a
+# grounded shadow with no visible mesh. (User request: real hands cast a shadow like the mesh hands.)
+func _apply_cast_shadow() -> void:
+	if _mesh_root == null:
+		return
+	var mode := GeometryInstance3D.SHADOW_CASTING_SETTING_ON if _shown else GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY
+	for mi in _mesh_root.find_children("*", "MeshInstance3D", true, false):
+		(mi as MeshInstance3D).cast_shadow = mode
 
 func is_shown() -> bool:
 	return _shown
@@ -126,9 +137,8 @@ func _burst(col: Color) -> void:
 func _process(_delta: float) -> void:
 	if _skeleton == null or _mesh_root == null:
 		return
-	if not _shown:
-		_mesh_root.visible = false
-		return
+	# NOTE: do NOT early-out when "hidden" — a hidden hand is SHADOWS_ONLY (see _apply_cast_shadow), so
+	# it must keep tracking the joints so its (invisible) shadow follows the real passthrough hand.
 	var tracker := XRServer.get_tracker(tracker_name)
 	var ht := tracker as XRHandTracker
 	if ht == null or not ht.get_has_tracking_data():
