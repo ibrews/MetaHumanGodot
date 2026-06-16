@@ -54,7 +54,7 @@ const PROFILES := {
 		"face_mode": "index",
 		"face_mesh_name": "Face",
 		"face_index_map": {0: "skin", 1: "teeth", 2: "hide", 3: "eyeR", 4: "eyeL",
-			5: "hide", 6: "hide", 7: "skin", 8: "lashes"},
+			5: "hide", 6: "hide", 7: "skin", 8: "hide"},   # 8: lashes DISABLED (looked weird) — hidden like the guy
 		# head_bc is the brow-painted variant — her MetaHuman ships NO eyebrow groom and
 		# none are baked into the skin, so brows are hand-painted onto a copy of the baked
 		# head albedo (blender_work/paint_her_brows.py). Revert to "exp_head_bc.png" to disable.
