@@ -49,13 +49,11 @@ textures/vram_compression/import_etc2_astc=true
 environment/subsurface_scattering/subsurface_scattering_quality=2
 environment/subsurface_scattering/subsurface_scattering_scale=0.08
 ; Quest standalone used MSAA 2x + FSR scaling (vr.gd retunes per quality tier at runtime).
-; visionOS: keep MSAA / FSR / screen-space-AA OFF *statically* here (the values below). On the
-; CompositorServices fork these must NOT be set at RUNTIME on the live XR viewport — doing so crashes
-; the device's layered compositor on the first frame (cp_frame_end_submission -> __BUG_IN_CLIENT__;
-; the sim TOLERATES the touch, which masked it). visionos.gd therefore sets ONLY use_xr + vrs_mode and
-; leaves these at the static defaults below. (This comment previously said visionos.gd force-sets them
-; at runtime "so a stale default can't reintroduce the empty render" — that runtime force-set was
-; ITSELF the device crash; removed in commit 5469923. KB: godot-avp-no-runtime-render-buffer-touch.)
+; visionOS: MSAA must be OFF — it does NOT render on the CompositorServices fork (Cascade README:
+; "MSAA does not work on this branch yet", blocked on godot#78598). With it ON the device shows
+; ONLY passthrough — the sim slice tolerates it, the device slice renders empty ("purgatory").
+; FSR scaling off too (mode 0), matching the known-good Cascade device config. visionos.gd also
+; forces all three at runtime so a stale project default can't reintroduce the empty-render.
 anti_aliasing/quality/msaa_3d=0
 anti_aliasing/quality/screen_space_aa=0
 anti_aliasing/quality/use_taa=false
@@ -66,7 +64,7 @@ environment/defaults/default_clear_color=Color(0.015, 0.017, 0.022, 1)
 ; visionOS: ample GPU headroom on AVP — high-res directional shadow so it isn't blocky when ON.
 ; The harness toggles the directional light's shadow_enabled (OFF / HIGH) at runtime per settings.
 lights_and_shadows/directional_shadow/size=4096
-lights_and_shadows/directional_shadow/soft_shadow_filter_quality=4
+lights_and_shadows/directional_shadow/soft_shadow_filter_quality=3
 lights_and_shadows/positional_shadow/soft_shadow_filter_quality=1
 
 [xr]

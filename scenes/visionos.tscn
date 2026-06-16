@@ -1,29 +1,25 @@
-[gd_scene load_steps=6 format=3]
+[gd_scene load_steps=3 format=3]
 
 ; visionOS XR entry scene — Godot's OWN renderer via Apple's CompositorServices fork
-; (rsanchezsaez/Clancey, PR #109975). NOT godotrealitykit. The character is instanced at runtime by
-; visionos.gd (material swap + eye-height placement + the control panel). XR rig mirrors the
-; confirmed-working rsanchezsaez/Cascade structure: XROrigin3D.current → XRCamera3D.near=0.1 →
-; AudioListener3D. WorldEnvironment bg alpha 0 + the passthrough depth-fix quad so transparent
-; content (the control panel) composites cleanly over passthrough (no blocky alpha halo).
+; (rsanchezsaez/Clancey, PR #109975). NOT godotrealitykit. The character is instanced at
+; runtime by visionos.gd (which also runs the StandardMaterial3D swap + places it ~0.9 m in
+; front of the user). XR rig mirrors the confirmed-working rsanchezsaez demo / Cascade Countdown
+; structure: XROrigin3D.current → XRCamera3D.near=0.1 → AudioListener3D. WorldEnvironment
+; background alpha 0 so the compositor composites the bust over passthrough (mixed) or void (full).
 
 [ext_resource type="Script" path="res://scenes/visionos.gd" id="1"]
-[ext_resource type="Shader" path="res://scenes/passthrough_depth_fix.gdshader" id="2"]
 
 [sub_resource type="Environment" id="Environment_1"]
 background_mode = 1
 background_color = Color(0, 0, 0, 0)
 ambient_light_source = 2
 ambient_light_color = Color(0.5, 0.54, 0.62, 1)
+; Ambient was 0.35 — too much flat fill drowned the directional shaping (washed-out skin). Lower
+; fill + a slight exposure pull restores form/contrast. tonemap_mode left at Linear (default): the
+; only tonemapper variant confirmed compiled on this visionOS fork (Cascade proves it); AgX/Filmic
+; risk a missing-variant magenta/blank render, so exposure is the safe contrast lever here.
 ambient_light_energy = 0.2
 tonemap_exposure = 0.9
-
-[sub_resource type="ShaderMaterial" id="Mat_depthfix"]
-shader = ExtResource("2")
-
-[sub_resource type="QuadMesh" id="QuadMesh_depthfix"]
-size = Vector2(2, 2)
-material = SubResource("Mat_depthfix")
 
 [node name="VisionOS" type="Node3D"]
 script = ExtResource("1")
@@ -39,15 +35,11 @@ near = 0.1
 
 [node name="AudioListener3D" type="AudioListener3D" parent="XROrigin3D/XRCamera3D"]
 
-[node name="PassthroughDepthFix" type="MeshInstance3D" parent="XROrigin3D/XRCamera3D"]
-; Full-screen depth-bias quad — kills the mixed-immersion blocky alpha halo (the control panel was
-; unreadable over passthrough). Writes a tiny depth everywhere so depth is never exactly 0. The
-; shader writes clip-space POSITION directly, so the transform/AABB is meaningless for rendering;
-; extra_cull_margin keeps it from being frustum-culled. (Cascade Countdown's fix, PR #109975.)
-extra_cull_margin = 16384.0
-mesh = SubResource("QuadMesh_depthfix")
-
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
 transform = Transform3D(0.86, -0.25, 0.44, 0, 0.87, 0.49, -0.51, -0.42, 0.75, 0, 3, 0)
 light_energy = 1.05
+; Shadow OFF: the directional shadow map shimmers on the thin alpha-scissor hair cards (flicker),
+; especially with MSAA off on this fork. N·L shading + ambient still give the face form, and a
+; figure floating in passthrough has no floor to catch a contact shadow. Re-enable with tuned
+; bias/blur (or per-mesh cast_shadow) if self-shadowing is wanted later.
 shadow_enabled = false
