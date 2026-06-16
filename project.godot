@@ -60,11 +60,14 @@ anti_aliasing/quality/use_taa=false
 scaling_3d/mode=0
 scaling_3d/scale=1.0
 environment/defaults/default_clear_color=Color(0.015, 0.017, 0.022, 1)
-; Shadow map shrunk 4096->2048 and soft-shadow filter 4->2 for the tiled mobile GPU.
-; visionOS: ample GPU headroom on AVP — high-res directional shadow so it isn't blocky when ON.
-; The harness toggles the directional light's shadow_enabled (OFF / HIGH) at runtime per settings.
-lights_and_shadows/directional_shadow/size=4096
-lights_and_shadows/directional_shadow/soft_shadow_filter_quality=4
+; visionOS uses the FORWARD MOBILE renderer, which reads the *.mobile* shadow overrides — the base
+; keys are desktop-only and were IGNORED on device (mobile default = 2048 → the "looks like 128"
+; blockiness). Push the .mobile atlas to 8192 + Ultra soft-filter; _apply_shadow tightens the frustum
+; to ~1.8 m around the figure for max texel density. (Base keys kept in sync for the editor/sim.)
+lights_and_shadows/directional_shadow/size=8192
+lights_and_shadows/directional_shadow/size.mobile=8192
+lights_and_shadows/directional_shadow/soft_shadow_filter_quality=5
+lights_and_shadows/directional_shadow/soft_shadow_filter_quality.mobile=5
 lights_and_shadows/positional_shadow/soft_shadow_filter_quality=1
 
 [xr]

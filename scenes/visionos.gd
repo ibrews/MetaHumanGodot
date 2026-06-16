@@ -43,6 +43,13 @@ var _diag_t := 0.0
 var _poll_t := 0.0
 var _busy := false                 # guards against overlapping reloads
 
+# --- hand-visualisation cycle (ported from Cascade Countdown) -----------------
+# 3-way cycle that never shows nothing: MESH hands (HandMeshDriver3D) → BOTH → REAL arms
+# (visionOS passthrough, via user://upper_limb.txt which the Clancey engine polls → .upperLimbVisibility).
+var _hand_drivers: Array = []
+var _hand_mesh_visible := true     # MESH-only at boot (matches Cascade's default)
+var _real_arms_visible := false
+
 # --- in-world gaze-dwell control panel (head-only; no hand tracking needed) ----
 const BTN_W := 0.27
 const BTN_H := 0.085
@@ -107,6 +114,8 @@ func _boot() -> void:
 	await _setup_loaded_character()
 	_apply_shadow()
 	_build_panel()
+	_setup_hands()
+	_apply_hand_visibility()
 	_dump_meshes()
 	print("[visionos-xr] ready — char=%s scale=%.2f shadow=%s front=%.2f" % [_s_char, _s_scale, _s_shadow, _s_front])
 
@@ -420,11 +429,12 @@ func _apply_shadow() -> void:
 	var dl := get_node_or_null("DirectionalLight3D") as DirectionalLight3D
 	if dl and _s_shadow == "high":
 		dl.shadow_enabled = true
-		dl.shadow_bias = 0.04
-		dl.shadow_normal_bias = 2.0
-		dl.shadow_blur = 1.5
+		dl.shadow_bias = 0.03
+		dl.shadow_normal_bias = 1.5
+		dl.shadow_blur = 1.0
 		dl.directional_shadow_mode = DirectionalLight3D.SHADOW_ORTHOGONAL
-		dl.directional_shadow_max_distance = 2.5   # tight on the figure → high texel density (crisp)
+		# Tight frustum on the figure: 8192 atlas (project.godot) over ~1.8 m ≈ huge texel density.
+		dl.directional_shadow_max_distance = 1.8   # was 2.5 — tighter = crisper (less blocky)
 
 # --- UI actions (also persist to the cfg so panel + external writers share one source) --------
 func ui_toggle_char() -> void:
@@ -456,6 +466,48 @@ func _activate(action: String) -> void:
 		"up": ui_bump_scale(0.15)
 		"down": ui_bump_scale(-0.15)
 		"shadow": ui_toggle_shadow()
+		"hands": _cycle_hands_mode()
+
+# --- hand-visualisation cycle (ported from Cascade Countdown) -----------------
+# One HandMeshDriver3D per hand, parented to XROrigin3D (renders the XR-Tools low-poly hand mesh
+# from XRHandTracker joints). The real (passthrough) arms are toggled via user://upper_limb.txt.
+func _setup_hands() -> void:
+	var origin := get_node_or_null("XROrigin3D") as Node3D
+	if origin == null:
+		return
+	for side in ["left_hand", "right_hand"]:
+		var d := HandMeshDriver3D.new()
+		d.tracker_name = "/user/hand_tracker/" + ("left" if side == "left_hand" else "right")
+		d.is_left = (side == "left_hand")
+		origin.add_child(d)
+		_hand_drivers.append(d)
+
+# 3-way cycle that can NEVER land on "no hands": MESH only → BOTH → REAL only → (wrap) MESH only.
+func _cycle_hands_mode() -> void:
+	if _hand_mesh_visible and not _real_arms_visible:
+		_real_arms_visible = true            # MESH → BOTH
+	elif _hand_mesh_visible and _real_arms_visible:
+		_hand_mesh_visible = false           # BOTH → REAL only
+	else:
+		_hand_mesh_visible = true             # REAL (or empty) → MESH only
+		_real_arms_visible = false
+	_apply_hand_visibility()
+
+# Apply current hand visibility; invariant: at least one of {mesh hands, real arms} is always shown.
+func _apply_hand_visibility() -> void:
+	if not _hand_mesh_visible and not _real_arms_visible:
+		_hand_mesh_visible = true
+	for d in _hand_drivers:
+		(d as HandMeshDriver3D).set_shown(_hand_mesh_visible)
+	_write_arms_pref()
+
+# Real (passthrough) arms preference; the Clancey engine polls user://upper_limb.txt (~0.5s) and
+# applies it to SwiftUI .upperLimbVisibility live (no relaunch). Same mechanism as Cascade Countdown.
+func _write_arms_pref() -> void:
+	var f := FileAccess.open("user://upper_limb.txt", FileAccess.WRITE)
+	if f:
+		f.store_string("visible" if _real_arms_visible else "hidden")
+		f.close()
 
 # Floating gaze-dwell control panel: look at a button for DWELL_SEC and it fires (a filling
 # cyan tint shows progress). Head-only — works on device with no hand tracking, and renders in the
@@ -470,7 +522,7 @@ func _build_panel() -> void:
 	add_child(_panel)
 	# Panel MIDDLE at the viewer's eye height (cam Y) + the cfg Y offset — so it survives a recenter.
 	_panel.position = Vector3(_s_px, (_cam.global_position.y if _cam else 1.5) + _s_py, _s_pz)
-	var defs := [["GUY / GAL", "char"], ["BIGGER", "up"], ["SMALLER", "down"], ["SHADOW", "shadow"]]
+	var defs := [["GUY / GAL", "char"], ["BIGGER", "up"], ["SMALLER", "down"], ["SHADOW", "shadow"], ["HANDS", "hands"]]
 	var plate := MeshInstance3D.new()
 	var pm := QuadMesh.new()
 	pm.size = Vector2(BTN_W + 0.05, (BTN_H + BTN_GAP) * defs.size() + 0.05)
