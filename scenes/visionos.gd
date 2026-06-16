@@ -69,20 +69,22 @@ func _ready() -> void:
 	_init_visionos_xr()
 	call_deferred("_boot")
 
-# Initialize the visionOS XR interface and route the viewport through it. MSAA/FSR/screen-space-AA
-# forced off — MSAA does not render on this fork on-device (Cascade: godot#78598), and the project
-# default (Quest inherited msaa_3d=1) would otherwise reintroduce the empty render.
+# Initialize the visionOS XR interface and route the viewport through it. Set ONLY use_xr + vrs_mode
+# (VRS_XR is REQUIRED for the layered compositor to produce output). Do NOT set msaa_3d / scaling_3d /
+# screen_space_aa at runtime — touching the XR render buffer crashes the layered CompositorServices on
+# device (cp_frame_end_submission → __BUG_IN_CLIENT__). They stay at project.godot defaults (all off).
 func _init_visionos_xr() -> void:
 	var interface := XRServer.find_interface("visionOS")
 	if interface and interface.initialize():
 		var vp := get_viewport()
 		vp.use_xr = true
 		vp.vrs_mode = Viewport.VRS_XR
-		vp.msaa_3d = Viewport.MSAA_DISABLED
-		vp.scaling_3d_mode = Viewport.SCALING_3D_MODE_BILINEAR
-		# FXAA is a post-process pass (NOT the hardware MSAA that's broken here) — it smooths the
-		# alpha-scissor hair/beard card edges that otherwise alias into a blocky/flickering mass.
-		vp.screen_space_aa = Viewport.SCREEN_SPACE_AA_FXAA
+		# DO NOT touch the XR render buffer at RUNTIME. Setting viewport.msaa_3d, scaling_3d_mode, OR
+		# screen_space_aa here crashes the layered CompositorServices on DEVICE at the first frame
+		# submission (cp_frame_end_submission → __BUG_IN_CLIENT__) — confirmed by on-device crash report
+		# 2026-06-16. The Simulator tolerates the touch; the device does not. These are left at their
+		# project.godot defaults (msaa_3d=0, screen_space_aa=0, scaling_3d/mode=0). The known-good Cascade
+		# rig sets ONLY use_xr + vrs_mode and explicitly warns against touching these (main_v2.gd:337).
 		var origin := get_node_or_null("XROrigin3D") as XROrigin3D
 		if origin:
 			origin.current = true
@@ -90,7 +92,7 @@ func _init_visionos_xr() -> void:
 		if not XRServer.pose_recentered.is_connected(_on_recenter):
 			XRServer.pose_recentered.connect(_on_recenter)
 		_xr_ok = true
-		print("[visionos-xr] visionOS XR interface initialized — use_xr + VRS_XR; MSAA off; FXAA on")
+		print("[visionos-xr] visionOS XR interface initialized — use_xr + VRS_XR (no render-buffer touch)")
 	else:
 		push_warning("[visionos-xr] visionOS interface unavailable — desktop flat-camera fallback")
 		var cam := Camera3D.new()
