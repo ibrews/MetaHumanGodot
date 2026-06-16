@@ -50,6 +50,35 @@ var _hand_drivers: Array = []
 var _hand_mesh_visible := true     # MESH-only at boot (matches Cascade's default)
 var _real_arms_visible := false
 
+# --- pinch-and-drag manipulation (ported from Cascade Countdown main_v2.gd) ----
+# One-hand pinch = grab/MOVE (PickupHandler3D latches a PickupAbleBody3D, body follows the hand).
+# Two-hand pinch on a grabbed body = SCALE + TURNTABLE-ROTATE. Rotation is CONSTRAINED TO YAW (Y)
+# only — pitch/roll are discarded (the figure/panel never tips over). Grabbables: the figure
+# (_rel, wrapped in _rel_body) and the control panel (_panel is itself a PickupAbleBody3D).
+const GRAB_LAYER := 4              # physics layer 3: grabbable bodies. Distinct from GAZE_LAYER(2).
+const PINCH_START := 0.024         # thumb–index TIP gap (m) to BEGIN a two-hand pinch point
+const PINCH_END := 0.052           # gap to END it (hysteresis, prevents flicker)
+const SCALE_MIN := 0.1
+const SCALE_MAX := 10.0
+const SCALE_END_GRACE := 8         # frames a pinch may drop mid-gesture before it truly ends
+const SCALE_FOLLOW_ALPHA := 0.5    # ease toward the raw two-hand target (1 = no smoothing)
+const SCALE_MAX_ORIGIN_STEP := 0.6 # metres/frame position cap (single-frame spike rejection)
+var _hand_handlers: Dictionary = {}        # side → PickupHandler3D
+var _rel_body: PickupAbleBody3D            # grab wrapper around the figure; _rel rides inside it
+var _rel_grabbed := false                  # latched on first figure grab → stop auto-anchoring _rel
+var _panel_grabbed := false                # latched on first panel grab (telemetry only)
+var _index_pinch_state := {"left_hand": false, "right_hand": false}
+var _scale_active := false
+var _scale_target: Node3D = null
+var _scale_lost_frames := 0
+var _scale_A0 := Vector3.ZERO              # world pinch points (L,R) at engage
+var _scale_B0 := Vector3.ZERO
+var _scale_T0: Transform3D = Transform3D.IDENTITY  # target body transform at engage
+var _scale_filt_ready := false
+var _scale_filt_origin := Vector3.ZERO
+var _scale_filt_basis := Basis.IDENTITY
+var _grab_log_count := 0                   # bounds the device grab-telemetry file
+
 # --- in-world gaze-dwell control panel (head-only; no hand tracking needed) ----
 const BTN_W := 0.27
 const BTN_H := 0.085
@@ -120,9 +149,35 @@ func _boot() -> void:
 	print("[visionos-xr] ready — char=%s scale=%.2f shadow=%s front=%.2f" % [_s_char, _s_scale, _s_shadow, _s_front])
 
 func _load_character() -> void:
+	# The figure rides inside a PickupAbleBody3D so a one-hand pinch can grab/move it and a two-hand
+	# pinch can scale/turntable it. The body is the transform owner (placement/scale/eye-anchor all
+	# write _rel_body); _rel stays at local identity inside it. The body persists across guy↔gal
+	# reloads (so a switched character reappears wherever the user last placed it).
+	if _rel_body == null:
+		_rel_body = PickupAbleBody3D.new()
+		_rel_body.name = "FigureBody"
+		_setup_figure_body(_rel_body)
+		add_child(_rel_body)
 	var ps := load("res://scenes/release.tscn") as PackedScene
 	_rel = ps.instantiate() as Node3D
-	add_child(_rel)
+	_rel_body.add_child(_rel)
+
+# Grab-body setup for the figure: a capsule roughly enclosing a standing MetaHuman (feet at the body
+# origin), grab-only layer, frozen + stay-where-placed on release (a figure shouldn't fall/throw).
+func _setup_figure_body(body: PickupAbleBody3D) -> void:
+	body.collision_layer = GRAB_LAYER
+	body.collision_mask = 0
+	body.freeze = true
+	body.freeze_mode = RigidBody3D.FREEZE_MODE_STATIC
+	body.freeze_on_release = true
+	var cs := CollisionShape3D.new()
+	cs.name = "CollisionShape3D"
+	var cap := CapsuleShape3D.new()
+	cap.radius = 0.38
+	cap.height = 1.70                 # spans ~0.05..1.75 m in body space → covers a standing figure
+	cs.shape = cap
+	cs.position = Vector3(0.0, 0.9, 0.0)
+	body.add_child(cs)
 
 # Convert materials (2-pass, grooms attach a few frames late), strip look-dev UI/cameras, calm the
 # demo, place + scale + face the user, hide the studio backdrop. Used by both _boot and reload.
@@ -358,28 +413,32 @@ func _quiet_demo() -> void:
 
 # Place the figure: feet on the floor (height, default 0), `front` metres ahead, facing the user.
 func _position_character() -> void:
-	if _rel == null:
+	if _rel_body == null:
 		return
-	_rel.position.x = 0.0
-	_rel.position.z = -_s_front
-	_rel.rotation = Vector3(0.0, deg_to_rad(FACE_USER_YAW_DEG), 0.0)
+	# Once the user has manually grabbed the figure, NEVER re-anchor it — the grab owns the transform
+	# (the RECONCILE requirement: the eye-anchor must not fight a manual move).
+	if _rel_grabbed:
+		return
+	_rel_body.position.x = 0.0
+	_rel_body.position.z = -_s_front
+	_rel_body.rotation = Vector3(0.0, deg_to_rad(FACE_USER_YAW_DEG), 0.0)
 	_match_eye_height()
 	print("[visionos-xr] placed: eye-matched y=%.2f, front=%.2f m, scale=%.2f, yaw +%.0f°" \
-		% [_rel.position.y, _s_front, _s_scale, FACE_USER_YAW_DEG])
+		% [_rel_body.position.y, _s_front, _s_scale, FACE_USER_YAW_DEG])
 
 # Sit the figure so its eyes are at the VIEWER's eye height (XRCamera Y) — feet then fall naturally
 # on the floor, at any scale (the user asked to match eyes, not feet). This is robust to the root-
 # pivot ambiguity that left the feet underground when placing the root at y=0. _s_height is a manual
 # nudge on top (0 = level with the viewer).
 func _match_eye_height() -> void:
-	if _rel == null:
+	if _rel_body == null:
 		return
 	if _cam == null:
-		_rel.position.y = _s_height   # desktop / no-XR fallback
+		_rel_body.position.y = _s_height   # desktop / no-XR fallback
 		return
 	var eye := _character_eye_y()
-	# eye_y is linear in _rel.position.y, so this moves the eyes exactly onto the target.
-	_rel.position.y += (_cam.global_position.y + _s_height) - eye
+	# eye_y is linear in _rel_body.position.y, so this moves the eyes exactly onto the target.
+	_rel_body.position.y += (_cam.global_position.y + _s_height) - eye
 
 # Crown-recenter (the user holds the Digital Crown → XRServer.pose_recentered): re-anchor the figure
 # + panel to the new eye height. This and boot are the ONLY times we re-anchor — never on normal head
@@ -411,11 +470,12 @@ func _character_eye_y() -> float:
 		return _rel.global_position.y + 1.5
 	return aabb.end.y - 0.12   # crown of the grooms minus ~12 cm ≈ eye line
 
-# Uniform scale about the figure's origin (feet) — grows/shrinks upward from the floor.
+# Uniform scale about the figure's origin (feet) — grows/shrinks upward from the floor. Applied to
+# the grab body (the figure rides inside it), so the grab collider scales with the figure too.
 func _apply_scale() -> void:
-	if _rel == null:
+	if _rel_body == null:
 		return
-	_rel.scale = Vector3(_s_scale, _s_scale, _s_scale)
+	_rel_body.scale = Vector3(_s_scale, _s_scale, _s_scale)
 
 # Directional shadow: OFF, or HIGH (crisp self-shadowing — 4096 map via project.godot + tuned bias,
 # a single orthogonal split tight on the figure so it isn't blocky).
@@ -476,6 +536,29 @@ func _setup_hands() -> void:
 	if origin == null:
 		return
 	for side in ["left_hand", "right_hand"]:
+		# Cascade's pinch-drag rig: an XRController3D per hand carries a PickupHandler3D that re-pins
+		# to the thumb-index midpoint each frame, detects nearby PickupAbleBody3D within detect_range,
+		# and runs the pinch grab/release latch. Hand tracking drives the pinch from thumb–index TIP
+		# distance (the controller action map is an unused fallback), so no input map is needed.
+		var controller := XRController3D.new()
+		controller.tracker = side
+		var handler := PickupHandler3D.new()
+		handler.detect_range = 0.07               # near-contact: pinch within ~7 cm of the body to grab
+		handler.follow_fingertips = true
+		handler.hold_while_hand_tracking_uncertain = true
+		handler.pickup_press_threshold = 0.85      # firm pinch — tips must close to ~1.2 cm
+		handler.collision_mask = GRAB_LAYER
+		var hcs := CollisionShape3D.new()
+		hcs.name = "CollisionShape3D"               # PickupHandler3D._update_detect_range() expects this name
+		var sphere := SphereShape3D.new()
+		sphere.radius = 0.3                          # overwritten by detect_range in the handler's _ready
+		hcs.shape = sphere
+		handler.add_child(hcs)
+		controller.add_child(handler)
+		origin.add_child(controller)
+		_hand_handlers[side] = handler
+
+		# Existing low-poly hand mesh (kept — the visualisation cycle still drives it).
 		var d := HandMeshDriver3D.new()
 		d.tracker_name = "/user/hand_tracker/" + ("left" if side == "left_hand" else "right")
 		d.is_left = (side == "left_hand")
@@ -517,10 +600,20 @@ func _build_panel() -> void:
 	if _panel:
 		_panel.queue_free()
 	_buttons.clear()
-	_panel = Node3D.new()
-	_panel.name = "ControlPanel"
+	# The panel is itself a grabbable body (a one-hand pinch moves it; two hands scale/turntable it).
+	# Its gaze/poke buttons are Area3D children on GAZE_LAYER, so they ride along and keep working
+	# after a grab. freeze_on_release → it stays where placed. Plate quad is the only direct
+	# MeshInstance3D child, so it's the only thing the grab outline overlay tints.
+	var pbody := PickupAbleBody3D.new()
+	pbody.name = "ControlPanel"
+	pbody.collision_layer = GRAB_LAYER
+	pbody.collision_mask = 0
+	pbody.freeze = true
+	pbody.freeze_mode = RigidBody3D.FREEZE_MODE_STATIC
+	pbody.freeze_on_release = true
+	_panel = pbody
 	add_child(_panel)
-	# Panel MIDDLE at the viewer's eye height (cam Y) + the cfg Y offset — so it survives a recenter.
+	# Panel MIDDLE at the viewer's eye height (cam Y) + the cfg Y offset.
 	_panel.position = Vector3(_s_px, (_cam.global_position.y if _cam else 1.5) + _s_py, _s_pz)
 	var defs := [["GUY / GAL", "char"], ["BIGGER", "up"], ["SMALLER", "down"], ["SHADOW", "shadow"], ["HANDS", "hands"]]
 	var plate := MeshInstance3D.new()
@@ -534,6 +627,15 @@ func _build_panel() -> void:
 	plate.material_override = pmat
 	plate.position = Vector3(0, 0, -0.01)
 	_panel.add_child(plate)
+	# Grab collider: a thin box covering the plate face (a pinch within detect_range of it grabs the
+	# panel). On GRAB_LAYER, so it's invisible to the GAZE_LAYER gaze ray and never blocks dwell.
+	var grab_cs := CollisionShape3D.new()
+	grab_cs.name = "CollisionShape3D"
+	var grab_box := BoxShape3D.new()
+	grab_box.size = Vector3(pm.size.x + 0.02, pm.size.y + 0.02, 0.06)
+	grab_cs.shape = grab_box
+	grab_cs.position = Vector3(0.0, 0.0, 0.0)
+	_panel.add_child(grab_cs)
 	var y := (defs.size() - 1) * (BTN_H + BTN_GAP) * 0.5
 	for d in defs:
 		_buttons.append(_make_button(d[0], d[1], Vector3(0.0, y, 0.0)))
@@ -682,7 +784,10 @@ func _poll_settings() -> void:
 	if changed and _s_char != prev_char:
 		_reload_character()
 		return
-	if changed:
+	# External cfg edits re-apply scale/placement — but NOT once the figure is under a manual grab
+	# (don't fight the user's pinch). The in-world BIGGER/SMALLER buttons go through ui_bump_scale,
+	# which still scales the grabbed body in place; only the auto re-anchor is suppressed.
+	if changed and not _rel_grabbed:
 		_apply_scale()
 		_position_character()
 		_dump_meshes()
@@ -715,13 +820,15 @@ func _reload_character() -> void:
 func _process(delta: float) -> void:
 	_frames += 1
 	_update_gaze(delta)
+	_update_two_hand_scale()   # both hands pinch a grabbed body → scale + yaw-rotate it
+	_latch_grab_flags()        # mark the figure as manually controlled (stops auto re-anchoring)
 	# settings poll
 	_poll_t += delta
 	if _poll_t >= POLL_DT:
 		_poll_t = 0.0
 		_poll_settings()
-	# liveness samples (first few only, to keep the file bounded)
-	if _samples < 6:
+	# liveness + grab telemetry (bounded — device stdout isn't captured; this file is the channel)
+	if _samples < 30:
 		_diag_t += delta
 		if _diag_t >= 3.0:
 			_diag_t = 0.0
@@ -731,5 +838,218 @@ func _process(delta: float) -> void:
 				f = FileAccess.open(FRAMES, FileAccess.WRITE)
 			if f:
 				f.seek_end()
-				f.store_string("sample %d: frames=%d char=%s xr_ok=%s\n" % [_samples, _frames, _s_char, _xr_ok])
+				f.store_string("sample %d: frames=%d char=%s xr_ok=%s  %s\n" \
+					% [_samples, _frames, _s_char, _xr_ok, _grab_state_str()])
 				f.close()
+
+# --- pinch-and-drag manipulation (ported from Cascade Countdown main_v2.gd) ----
+
+# Latch "the user has taken manual control" the first time each body is picked up. Once latched the
+# figure is never auto-re-anchored again (see _position_character) — it stays wherever it's left.
+func _latch_grab_flags() -> void:
+	if not _rel_grabbed and _rel_body != null and _rel_body.is_picked_up():
+		_rel_grabbed = true
+		_grab_log("figure grabbed (one-hand)")
+	if not _panel_grabbed and _panel != null and _panel.has_method("is_picked_up") and _panel.is_picked_up():
+		_panel_grabbed = true
+		_grab_log("panel grabbed (one-hand)")
+
+# Thumb–index TIP midpoint in TRACKING space (XROrigin-relative) with pinch hysteresis, or null —
+# drives the two-hand scale/turntable. Joint ints are raw OpenXR (5=thumb tip, 10=index tip,
+# 15/20/25=middle/ring/pinky tip); the enum NAMES differ between the 4.6.3 editor and 4.6.2 runtime,
+# so never use them. Only VALID (not TRACKED) is required so close-together hands holding through
+# mutual occlusion don't tear the gesture down. Verbatim from Cascade's _index_pinch_point.
+func _index_pinch_point(side: String):
+	var tname := "/user/hand_tracker/" + ("left" if side == "left_hand" else "right")
+	var ht := XRServer.get_tracker(tname) as XRHandTracker
+	if ht == null or not ht.get_has_tracking_data():
+		_index_pinch_state[side] = false
+		return null
+	if not ((int(ht.get_hand_joint_flags(5)) & XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID) and (int(ht.get_hand_joint_flags(10)) & XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID)):
+		_index_pinch_state[side] = false
+		return null
+	var thumb := ht.get_hand_joint_transform(5).origin
+	var index := ht.get_hand_joint_transform(10).origin
+	var d_index := index.distance_to(thumb)
+	var was: bool = _index_pinch_state[side]
+	var active: bool
+	if was:
+		active = d_index < PINCH_END                       # stay pinched until it clearly opens
+	else:
+		var d_mid := ht.get_hand_joint_transform(15).origin.distance_to(thumb)
+		var d_ring := ht.get_hand_joint_transform(20).origin.distance_to(thumb)
+		var d_pinky := ht.get_hand_joint_transform(25).origin.distance_to(thumb)
+		var index_closest := d_index <= d_mid and d_index <= d_ring and d_index <= d_pinky
+		active = index_closest and d_index < PINCH_START   # to BEGIN: index closest + within start dist
+	_index_pinch_state[side] = active
+	if not active:
+		return null
+	return (index + thumb) * 0.5
+
+# Two-hand "glued pinch": one hand holds a body (its PickupHandler latched it), the other pinches near
+# it → SCALE by the inter-hand distance ratio + TURNTABLE-ROTATE by the inter-hand vector's yaw delta.
+# Rotation is CONSTRAINED TO YAW (Y) only — pitch/roll are discarded so the figure/panel never tips.
+# (Cascade applies the full Quaternion(v0,v1); here we take only the XZ-plane angle delta.) Smoothing
+# + spike-reject are Cascade's. The world/handle case is dropped (no scene handle here).
+func _update_two_hand_scale() -> void:
+	var pL = _index_pinch_point("left_hand")     # tracking space
+	var pR = _index_pinch_point("right_hand")
+	if pL == null or pR == null:
+		# Debounce: a 1-frame pinch dropout shouldn't tear down a live gesture.
+		if _scale_active:
+			_scale_lost_frames += 1
+			if _scale_lost_frames < SCALE_END_GRACE:
+				return
+		_end_scale()
+		return
+	_scale_lost_frames = 0
+	var origin := get_node_or_null("XROrigin3D") as Node3D
+	if origin == null:
+		return
+	var PA: Vector3 = origin.global_transform * (pL as Vector3)   # current world pinch L
+	var PB: Vector3 = origin.global_transform * (pR as Vector3)   # current world pinch R
+
+	# --- Engage: one hand must already HOLD a body, and the other pinch must be near it. ---
+	if not _scale_active:
+		var lh = _hand_handlers.get("left_hand")
+		var rh = _hand_handlers.get("right_hand")
+		var cand: Node3D = null
+		var free_pt := Vector3.ZERO
+		if lh != null and lh.picked_up_body != null:
+			cand = lh.picked_up_body
+			free_pt = PB          # left holds → right is the free pinch
+		elif rh != null and rh.picked_up_body != null:
+			cand = rh.picked_up_body
+			free_pt = PA          # right holds → left is the free pinch
+		if cand == null:
+			return
+		if free_pt.distance_to(_grab_center(cand)) > _grab_reach(cand):
+			return
+		_scale_active = true
+		_scale_target = cand
+		_scale_A0 = PA
+		_scale_B0 = PB
+		_scale_T0 = cand.global_transform
+		_scale_filt_ready = false
+		if cand.has_method("set_two_hand"):
+			cand.set_two_hand(true)
+		if cand == _rel_body:
+			_rel_grabbed = true
+		_grab_log("two-hand engage: %s" % cand.name)
+
+	# --- Apply (yaw-only rotation). ---
+	if not is_instance_valid(_scale_target):
+		_end_scale()
+		return
+	var v0: Vector3 = _scale_B0 - _scale_A0
+	var v1: Vector3 = PB - PA
+	if v0.length() < 0.001 or v1.length() < 0.001:
+		return
+	var s: float = clampf(v1.length() / v0.length(), SCALE_MIN, SCALE_MAX)
+	# TURNTABLE: yaw = angle of the inter-hand vector in the XZ plane; rotate about world Y by the
+	# delta. Discards pitch/roll entirely (no Quaternion(v0,v1) tip-over). Same convention for both
+	# angles ⇒ the figure turns the same direction the hands swing.
+	var yaw0 := atan2(v0.x, v0.z)
+	var yaw1 := atan2(v1.x, v1.z)
+	var rot := Basis(Vector3.UP, yaw1 - yaw0)
+	var lin := rot * s
+	var raw_origin: Vector3 = PA + lin * (_scale_T0.origin - _scale_A0)
+	var raw_basis: Basis = lin * _scale_T0.basis
+	# Spike-reject + smooth (the raw path amplifies pinch jitter by the scale factor).
+	if not _scale_filt_ready:
+		_scale_filt_origin = raw_origin
+		_scale_filt_basis = raw_basis
+		_scale_filt_ready = true
+	else:
+		var step: Vector3 = raw_origin - _scale_filt_origin
+		if step.length() > SCALE_MAX_ORIGIN_STEP:
+			raw_origin = _scale_filt_origin + step.normalized() * SCALE_MAX_ORIGIN_STEP
+		_scale_filt_origin = _scale_filt_origin.lerp(raw_origin, SCALE_FOLLOW_ALPHA)
+		# Basis carries scale, so ease componentwise (slerp is rotation-only).
+		_scale_filt_basis = Basis(
+			_scale_filt_basis.x.lerp(raw_basis.x, SCALE_FOLLOW_ALPHA),
+			_scale_filt_basis.y.lerp(raw_basis.y, SCALE_FOLLOW_ALPHA),
+			_scale_filt_basis.z.lerp(raw_basis.z, SCALE_FOLLOW_ALPHA))
+	_scale_target.global_transform = Transform3D(_scale_filt_basis, _scale_filt_origin)
+
+# End the two-hand gesture: release the body so EITHER hand can re-grab it, restore its collision, and
+# (for the figure) sync _s_scale to the new size so the BIGGER/SMALLER buttons continue smoothly.
+func _end_scale() -> void:
+	if _scale_active and _scale_target != null and is_instance_valid(_scale_target):
+		if _scale_target.has_method("set_two_hand"):
+			_scale_target.set_two_hand(false)
+		for side in ["left_hand", "right_hand"]:
+			var h = _hand_handlers.get(side)
+			if h != null and h.picked_up_body == _scale_target:
+				h.picked_up_body = null
+				h.was_pickup_pressed = true   # require a fresh pinch edge before re-grab
+		if _scale_target.has_method("let_go"):
+			_scale_target.let_go()
+		if _scale_target == _rel_body:
+			_s_scale = clampf(_rel_body.scale.x, 0.2, 4.0)
+			_save_settings()
+		_grab_log("two-hand end: %s scale=%.2f" % [_scale_target.name, _scale_target.scale.x])
+	_scale_active = false
+	_scale_target = null
+	_scale_lost_frames = 0
+
+# First CollisionShape3D child of a grab body (used to size the "free pinch near it" engage test).
+func _first_collision_shape(body: Node) -> CollisionShape3D:
+	for c in body.get_children():
+		if c is CollisionShape3D:
+			return c as CollisionShape3D
+	return null
+
+# World-space CENTRE of a grab body's collider (NOT its origin — the figure's origin is at the feet).
+func _grab_center(body: Node3D) -> Vector3:
+	var cs := _first_collision_shape(body)
+	if cs != null:
+		return cs.global_position
+	return body.global_position
+
+# World-space grab radius of a body, from its collider extent × world scale + grace.
+func _grab_reach(body: Node3D) -> float:
+	var r := 0.3
+	var cs := _first_collision_shape(body)
+	if cs != null and cs.shape != null:
+		var sh := cs.shape
+		if sh is CapsuleShape3D:
+			r = maxf((sh as CapsuleShape3D).height * 0.5, (sh as CapsuleShape3D).radius)
+		elif sh is BoxShape3D:
+			r = (sh as BoxShape3D).size.length() * 0.5
+		elif sh is SphereShape3D:
+			r = (sh as SphereShape3D).radius
+	return r * maxf(body.scale.x, 0.2) + 0.15
+
+# --- grab telemetry (device has no stdout; pull user://mh_frames.txt) ----------
+func _has_hand_tracker(side: String) -> bool:
+	var tname := "/user/hand_tracker/" + ("left" if side == "left_hand" else "right")
+	var ht := XRServer.get_tracker(tname) as XRHandTracker
+	return ht != null and ht.get_has_tracking_data()
+
+func _held_name(h) -> String:
+	if h != null and h.picked_up_body != null:
+		return String(h.picked_up_body.name)
+	return "-"
+
+func _grab_state_str() -> String:
+	var lh = _hand_handlers.get("left_hand")
+	var rh = _hand_handlers.get("right_hand")
+	var tgt := String(_scale_target.name) if _scale_target != null else "-"
+	return "grab L[trk=%s held=%s] R[trk=%s held=%s] scale=%s tgt=%s relG=%s panelG=%s" % [
+		_has_hand_tracker("left_hand"), _held_name(lh),
+		_has_hand_tracker("right_hand"), _held_name(rh),
+		_scale_active, tgt, _rel_grabbed, _panel_grabbed]
+
+# Bounded append to the telemetry file so an event log can't grow without limit on a long session.
+func _grab_log(msg: String) -> void:
+	if _grab_log_count >= 80:
+		return
+	_grab_log_count += 1
+	var f := FileAccess.open(FRAMES, FileAccess.READ_WRITE)
+	if f == null:
+		f = FileAccess.open(FRAMES, FileAccess.WRITE)
+	if f:
+		f.seek_end()
+		f.store_string("[grab] %s\n" % msg)
+		f.close()

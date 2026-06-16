@@ -47,6 +47,11 @@ const _POS_HISTORY_MAX := 6
 
 static func _make_outline(color: Color, width: float) -> ShaderMaterial:
 	var base := load("res://shaders/highlight_material.tres") as ShaderMaterial
+	if base == null:
+		# Resource missing/unexported → return an empty material instead of crashing the body's
+		# member init (a null .duplicate() would abort instantiation → no grab at all). The overlay
+		# then renders nothing; grab/scale still works. (visionOS port hardening.)
+		return ShaderMaterial.new()
 	var m := base.duplicate() as ShaderMaterial
 	m.set_shader_parameter("albedo", color)
 	m.set_shader_parameter("grow", width)

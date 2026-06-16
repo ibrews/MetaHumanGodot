@@ -197,6 +197,11 @@ Simulator and on a physical Apple Vision Pro at ~90 fps.
 custom GLSL skin/eye/hair shaders through a runtime **StandardMaterial3D swap** (the custom shaders
 don't compile on the visionOS Mobile/Metal renderer — the same wall as the Quest build's Adreno).
 
+A **hand-tracking pinch system** (ported from [Cascade Countdown](https://github.com/ibrews/godot-avp-cascade),
+in `pickup/`) makes both the figure and the control panel grabbable: pinch (thumb + index) to grab and
+**move**, or pinch with both hands to **scale** and **turntable-rotate** (yaw only — pitch/roll are
+discarded so the figure never tips). Once you grab the figure, the auto eye-anchor stops fighting you.
+
 ### Things to Try (visionOS)
 
 1. **Build to the Simulator** with the CompositorServices fork tooling —
@@ -206,7 +211,11 @@ don't compile on the visionOS Mobile/Metal renderer — the same wall as the Que
    shadow** — live, with no rebuild, via `user://mh_settings.cfg`.
 3. **Use the in-world control panel** — glance at a button (lower-left) for ~1 second to fire it; no
    controllers or hand tracking required (head-gaze dwell).
-4. **Run it on a real Apple Vision Pro** and walk around the figure in your room (mixed immersion).
+4. **Pinch to move, scale, and turntable-rotate** (real Apple Vision Pro — needs hand tracking) —
+   pinch (thumb + index) near the figure or the control panel to **grab and move** it; pinch with
+   **both hands** and spread / bring them together to **scale**, or swing them around each other to
+   **turntable-rotate** (yaw only — it never tips over).
+5. **Run it on a real Apple Vision Pro** and walk around the figure in your room (mixed immersion).
 
 > **Gotchas (hard-won):** MSAA must be **off** (it renders empty on-device on this engine fork);
 > export scripts in **Text** mode (`script_export_mode=0`); the renderer must be **Mobile**.
