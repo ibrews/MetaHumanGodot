@@ -215,3 +215,7 @@ automation** (one-shot export of the face/body/grooms, surface remapping, shader
 wiring, the ARKit morph bake, animation setup) is a separate, more involved
 offering and is **not** part of this public repo. If you want the turnkey workflow
 rather than hand-assembling `character.glb`, that's where to look.
+
+## Support
+
+If you like seeing this kind of thing get built and shared, [donations are always welcome](https://www.alexcoulombepresents.com/support) — they buy hardware, render time, and the freedom to keep giving most of this away.
