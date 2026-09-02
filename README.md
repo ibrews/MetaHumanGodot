@@ -1,7 +1,7 @@
 # MetaHuman → Godot Look-Dev
 
 > ⚠️ **Not an Epic Games or Godot Foundation product.** This is an independent,
-> community tool made by Agile Lens. It is **not** created, published, endorsed,
+> community tool made by Alex Coulombe Presents. It is **not** created, published, endorsed,
 > sponsored by, or affiliated with Epic Games or the Godot Foundation, and is
 > **not** official MetaHuman, Unreal Engine, or Godot software. The repository
 > name "MetaHumanGodot" describes what the tool *works with* — it does not imply
@@ -136,6 +136,14 @@ bar after each capture).
 The two original tools remain available: `scenes/look_dev.tscn` (the orbit-camera
 MH_Test tuner, launchable via `run_lookdev.bat`) and `scenes/match_lookdev.tscn`
 (the UE-matched explainer tuner).
+
+## Things to Try
+
+1. **Launch the release tool with a bundled MetaHuman** — run `<godot-binary> --path <absolute-path-to-this-folder> scenes/release.tscn --resolution 1280x1280` (or `run_release.bat` on Windows); the "guy" or "her" MetaHuman loads by default and the look-dev panel appears on the right.
+2. **Toggle between the two built-in characters** — press **C** (or click *Character: …*); skin, eyes, hair, and hidden slots re-wire live for the new character.
+3. **Drive an ARKit blendshape** — press **B** to show the blendshape panel, then drag `jawOpen` or `mouthSmileLeft`; the face mesh and the propagated groom cards (beard/brows) deform together in real time.
+4. **Load your own MetaHuman export** — drag-and-drop a `.glb`/`.gltf` onto the window, or click *Load custom character…*; the tool unit-normalizes the mesh and best-effort wires skin/eyes/hair by material-name heuristics.
+5. **Run a headless turntable capture** — `RELEASE_CHAR=guy RELEASE_CAPTURE=1 RELEASE_MOVIE=1 MOVIE_FRAMES=120 <godot-binary> --path <abs> scenes/release.tscn --resolution 1080x1080` renders `release_guy_still.png` plus a 120-frame turntable mp4 to `out/release/` with no UI.
 
 ## Controls
 
